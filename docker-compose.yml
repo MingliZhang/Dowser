@@ -1,0 +1,17 @@
+services:
+  dowser:
+    build: .
+    container_name: dowser
+    ports:
+      - "8081:8081"
+    volumes:
+      # Point the first path at wherever you want your videos.
+      - ./downloads:/downloads
+      - ./config:/config
+    environment:
+      MAX_CONCURRENT_DOWNLOADS: 2
+      SNIFF_TIMEOUT: 25
+      # COOKIES_FILE: /config/cookies.txt
+    # Chromium needs more than the default 64MB of shared memory.
+    shm_size: 1gb
+    restart: unless-stopped

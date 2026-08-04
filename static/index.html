@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dowser</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💧</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">💧</span>
+      <div>
+        <h1>Dowser</h1>
+        <p class="tagline">Loads the page, watches what it streams, downloads it with ffmpeg.</p>
+      </div>
+    </div>
+    <div class="pills" id="capabilities"></div>
+  </header>
+
+  <main>
+    <section class="panel input-panel">
+      <label class="field-label" for="urls">
+        Page URLs <span class="hint">one per line — or paste an .m3u8 / .mpd / .mp4 directly</span>
+      </label>
+      <textarea id="urls" rows="3" spellcheck="false"
+                placeholder="https://example.com/watch/some-video&#10;https://another-site.com/lesson-3"></textarea>
+
+      <div class="controls">
+        <button id="detect" class="primary">Detect streams</button>
+        <label class="checkbox" title="Skip the headless browser. Much faster, but only works on sites with a known extractor.">
+          <input type="checkbox" id="quick" /> Quick mode (no browser)
+        </label>
+        <label class="subfolder">
+          Subfolder
+          <input type="text" id="subfolder" placeholder="optional" autocomplete="off" />
+        </label>
+        <span class="spacer"></span>
+        <button id="clear-detections" class="ghost">Clear results</button>
+      </div>
+      <p class="status-line" id="detect-status"></p>
+    </section>
+
+    <section class="panel" id="detections-panel" hidden>
+      <div class="panel-head">
+        <h2>Detected pages</h2>
+        <span class="counter" id="detections-count"></span>
+      </div>
+      <div id="detections"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Downloads</h2>
+        <div class="panel-actions">
+          <span class="counter" id="queue-count"></span>
+          <button id="clear-finished" class="ghost">Clear finished</button>
+        </div>
+      </div>
+      <div id="queue"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

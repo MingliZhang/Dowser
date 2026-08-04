@@ -1,0 +1,30 @@
+# --- secrets and sessions -----------------------------------------
+# cookies.txt holds live session tokens for any site you have logged into.
+.env
+cookies.txt
+*cookies*.txt
+
+# --- runtime data --------------------------------------------------
+downloads/
+config/
+state.json
+state.tmp
+*.tmp
+
+# --- python --------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- editors and os ------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
