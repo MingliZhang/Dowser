@@ -8,6 +8,7 @@ cookies.txt
 downloads/
 config/
 state.json
+settings.json
 state.tmp
 *.tmp
 

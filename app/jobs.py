@@ -1,4 +1,4 @@
-"""Download queue: bounded concurrency, live progress, disk persistence."""
+"""Download queue: bounded concurrency, stall recovery, live progress, persistence."""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,60 @@ from typing import Any
 from . import downloader, naming
 from .config import settings
 from .models import DownloadItem, Job, JobStatus
+from .settings_store import runtime
+
+#: Idle workers are cheap; the real limit is enforced by the shared limiter, so
+#: "parallel downloads" can be raised in the UI without a restart.
+WORKER_POOL = 12
+#: How often to check for stalled jobs and due retries.
+WATCHDOG_INTERVAL = 2.0
+#: Progress ticks arrive ~4x a second; persisting every one of them would write
+#: to disk all day on a long-running server. State is checkpointed instead.
+SAVE_INTERVAL = 5.0
+
+
+class DynamicLimiter:
+    """A semaphore whose capacity can change while jobs are in flight."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, limit)
+        self._active = 0
+        self._condition = asyncio.Condition()
+        self._wakers: set[asyncio.Task] = set()
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    async def acquire(self) -> None:
+        async with self._condition:
+            while self._active >= self._limit:
+                await self._condition.wait()
+            self._active += 1
+
+    def release(self) -> None:
+        self._active = max(0, self._active - 1)
+        self._wake()
+
+    def set_limit(self, limit: int) -> None:
+        limit = max(1, limit)
+        if limit == self._limit:
+            return
+        self._limit = limit
+        # Raising the limit must let already-waiting workers through.
+        self._wake()
+
+    def _wake(self) -> None:
+        try:
+            task = asyncio.create_task(self._notify_waiters())
+        except RuntimeError:  # no running loop (shutdown)
+            return
+        self._wakers.add(task)
+        task.add_done_callback(self._wakers.discard)
+
+    async def _notify_waiters(self) -> None:
+        async with self._condition:
+            self._condition.notify_all()
 
 
 class QueueManager:
@@ -25,27 +79,41 @@ class QueueManager:
         self._subscribers: set[Any] = set()
         self._dirty = asyncio.Event()
         self._flusher: asyncio.Task | None = None
+        self._watchdog: asyncio.Task | None = None
         self._detect_tasks: set[asyncio.Task] = set()
         #: Headless browsers are heavy — only a few pages at a time.
         self._detect_sem = asyncio.Semaphore(3)
+        self._limiter: DynamicLimiter | None = None
+        #: Jobs the watchdog killed, so _process can tell them from user cancels.
+        self._stalled: set[str] = set()
+        self._last_save = 0.0
 
     # --- lifecycle -----------------------------------------------------------
 
     async def start(self) -> None:
         self._load()
-        for _ in range(settings.max_concurrent):
+        self._limiter = DynamicLimiter(runtime.max_concurrent)
+        for _ in range(WORKER_POOL):
             self._workers.append(asyncio.create_task(self._worker()))
         self._flusher = asyncio.create_task(self._flush_loop())
+        self._watchdog = asyncio.create_task(self._watch_loop())
 
     async def stop(self) -> None:
         for task in [*self._workers, *self._tasks.values()]:
             task.cancel()
-        if self._flusher:
-            self._flusher.cancel()
+        for task in (self._flusher, self._watchdog):
+            if task:
+                task.cancel()
         await asyncio.gather(
             *self._workers, *self._tasks.values(), return_exceptions=True
         )
         self._save()
+
+    def apply_settings(self) -> None:
+        """Called after the settings change so live knobs take effect at once."""
+        if self._limiter:
+            self._limiter.set_limit(runtime.max_concurrent)
+        self._notify()
 
     # --- public API ----------------------------------------------------------
 
@@ -139,10 +207,14 @@ class QueueManager:
     def forget_detection(self, url: str) -> bool:
         return self.detections.pop(url, None) is not None
 
+    # --- job control ---------------------------------------------------------
+
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
         if not job:
             return False
+        # A human cancelling means "stop", so clear any pending auto-retry.
+        job.retry_at = None
         if job.status == JobStatus.RUNNING:
             if task := self._tasks.get(job_id):
                 task.cancel()
@@ -151,6 +223,10 @@ class QueueManager:
             job.status = JobStatus.CANCELLED
             job.message = "Cancelled before it started"
             job.finished_at = time.time()
+            self._notify()
+            return True
+        if job.status == JobStatus.ERROR:
+            job.message = f"{job.message} — auto-retry cancelled"
             self._notify()
             return True
         return False
@@ -169,14 +245,21 @@ class QueueManager:
         job = self.jobs.get(job_id)
         if not job or job.status in {JobStatus.RUNNING, JobStatus.QUEUED}:
             return False
+        # Manual retry is a fresh start: the automatic budget resets too.
+        job.retry_count = 0
+        self._requeue(job, "Retrying...")
+        return True
+
+    def _requeue(self, job: Job, message: str) -> None:
         job.status = JobStatus.QUEUED
         job.percent = job.downloaded_bytes = job.total_bytes = None
         job.speed = job.eta = None
-        job.message = ""
+        job.message = message
         job.started_at = job.finished_at = None
+        job.last_progress_at = None
+        job.retry_at = None
         self._pending.put_nowait(job.id)
         self._notify()
-        return True
 
     def clear_finished(self) -> int:
         done = [
@@ -201,10 +284,11 @@ class QueueManager:
             "detections": list(self.detections.values()),
             "settings": {
                 "download_dir": str(settings.download_dir),
-                "max_concurrent": settings.max_concurrent,
                 "sniffer": settings.playwright_available,
                 "ffmpeg": settings.ffmpeg_available,
+                **runtime.public(),
             },
+            "now": time.time(),
         }
 
     # --- subscribers ---------------------------------------------------------
@@ -232,40 +316,116 @@ class QueueManager:
                     dead.append(websocket)
             for websocket in dead:
                 self._subscribers.discard(websocket)
-            self._save()
+            self._checkpoint()
             await asyncio.sleep(0.25)
+
+    def _checkpoint(self) -> None:
+        """Persist at most once every SAVE_INTERVAL seconds."""
+        now = time.monotonic()
+        if now - self._last_save < SAVE_INTERVAL:
+            return
+        self._last_save = now
+        self._save()
+
+    # --- stall detection and retries -----------------------------------------
+
+    async def _watch_loop(self) -> None:
+        """Kill downloads that stopped moving, and start due retries."""
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL)
+            now = time.time()
+            changed = False
+
+            timeout = runtime.stall_timeout
+            if timeout > 0:
+                for job in list(self.jobs.values()):
+                    if job.status != JobStatus.RUNNING or job.id in self._stalled:
+                        continue
+                    reference = job.last_progress_at or job.started_at
+                    if reference and now - reference > timeout:
+                        self._stalled.add(job.id)
+                        if task := self._tasks.get(job.id):
+                            task.cancel()
+                        changed = True
+
+            for job in list(self.jobs.values()):
+                if job.status == JobStatus.ERROR and job.retry_at and job.retry_at <= now:
+                    job.retry_count += 1
+                    self._requeue(
+                        job,
+                        f"Automatic retry {job.retry_count} of {runtime.max_retries}...",
+                    )
+                    changed = True
+
+            if changed:
+                self._notify()
+            elif any(j.retry_at for j in self.jobs.values()):
+                # Keep the countdown in the UI ticking.
+                self._notify()
+
+    def _schedule_retry(self, job: Job) -> None:
+        """Arm an automatic retry, unless we are out of attempts."""
+        if not runtime.auto_retry or runtime.max_retries <= 0:
+            return
+        if job.retry_count >= runtime.max_retries:
+            job.message = (
+                f"{job.message} — gave up after {job.retry_count} automatic "
+                f"attempt{'s' if job.retry_count != 1 else ''}"
+            )
+            return
+        job.retry_at = time.time() + runtime.retry_delay
 
     # --- worker --------------------------------------------------------------
 
     async def _worker(self) -> None:
+        assert self._limiter is not None
         while True:
             job_id = await self._pending.get()
             job = self.jobs.get(job_id)
             if not job or job.status != JobStatus.QUEUED:
                 continue
-            task = asyncio.create_task(self._process(job))
-            self._tasks[job.id] = task
+
+            await self._limiter.acquire()
             try:
-                await task
-            except asyncio.CancelledError:
-                if job.status == JobStatus.RUNNING:
-                    job.status = JobStatus.CANCELLED
-                    job.message = "Cancelled"
-                    job.finished_at = time.time()
-                    self._notify()
+                task = asyncio.create_task(self._process(job))
+                self._tasks[job.id] = task
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    if job.status == JobStatus.RUNNING:
+                        job.status = JobStatus.CANCELLED
+                        job.message = "Cancelled"
+                        job.finished_at = time.time()
+                        self._notify()
+                finally:
+                    self._tasks.pop(job.id, None)
             finally:
-                self._tasks.pop(job.id, None)
+                self._limiter.release()
 
     async def _process(self, job: Job) -> None:
         job.status = JobStatus.RUNNING
         job.started_at = time.time()
+        job.last_progress_at = time.time()
+        job.retry_at = None
         job.message = "Starting..."
         self._notify()
 
         def on_progress(update: dict) -> None:
+            # Only real forward movement resets the stall clock — ffmpeg keeps
+            # emitting progress lines even when the transfer is wedged.
+            advanced = False
+            downloaded = update.get("downloaded_bytes")
+            if downloaded is not None and downloaded > (job.downloaded_bytes or 0):
+                advanced = True
+            percent = update.get("percent")
+            if percent is not None and percent > (job.percent or 0):
+                advanced = True
+
             for key, value in update.items():
                 if value is not None:
                     setattr(job, key, value)
+            if advanced:
+                job.last_progress_at = time.time()
             self._notify()
 
         try:
@@ -277,12 +437,21 @@ class QueueManager:
             job.message = f"Saved to {final_path.name}"
             job.total_bytes = job.total_bytes or final_path.stat().st_size
         except asyncio.CancelledError:
+            if job.id in self._stalled:
+                # We caused this cancellation, so swallow it and treat the job
+                # as a failure that deserves a retry.
+                self._stalled.discard(job.id)
+                job.status = JobStatus.ERROR
+                job.message = f"Stalled — no progress for {runtime.stall_timeout}s"
+                self._schedule_retry(job)
+                return
             job.status = JobStatus.CANCELLED
             job.message = "Cancelled"
             raise
         except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
             job.status = JobStatus.ERROR
             job.message = str(exc)[:400] or exc.__class__.__name__
+            self._schedule_retry(job)
         finally:
             job.finished_at = time.time()
             job.speed = job.eta = None
@@ -327,10 +496,12 @@ class QueueManager:
         for raw in payload.get("jobs", []):
             with contextlib.suppress(Exception):
                 job = Job.model_validate(raw)
-                # Anything mid-flight when we shut down never finished.
+                # Anything mid-flight when we shut down never finished. Arm a
+                # retry so an unattended server picks it back up on its own.
                 if job.status in {JobStatus.RUNNING, JobStatus.QUEUED}:
                     job.status = JobStatus.ERROR
-                    job.message = "Interrupted by a restart — retry to resume"
+                    job.message = "Interrupted by a restart"
+                    job.retry_at = time.time() + 5 if runtime.auto_retry else None
                 self.jobs[job.id] = job
         for entry in payload.get("detections", []):
             if url := entry.get("url"):

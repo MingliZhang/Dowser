@@ -42,6 +42,22 @@
       <p class="status-line" id="detect-status"></p>
     </section>
 
+    <section class="panel settings-panel">
+      <details id="settings-details">
+        <summary>
+          <span class="summary-row">
+            <h2>Settings</h2>
+            <span class="counter">stall detection · retries · scan time</span>
+          </span>
+        </summary>
+        <div id="settings-form"></div>
+        <div class="settings-foot">
+          <button id="reset-settings" class="ghost tiny">Reset to defaults</button>
+          <span class="saved-flash" id="settings-saved"></span>
+        </div>
+      </details>
+    </section>
+
     <section class="panel" id="detections-panel" hidden>
       <div class="panel-head">
         <h2>Detected pages</h2>

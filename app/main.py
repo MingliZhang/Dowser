@@ -13,9 +13,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import __version__
 from .config import settings
 from .jobs import queue
 from .models import DownloadRequest
+from .settings_store import runtime
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -50,6 +52,44 @@ async def index() -> FileResponse:
 @app.get("/api/state")
 async def state() -> dict:
     return queue.snapshot()
+
+
+@app.get("/api/health")
+async def health() -> dict:
+    """Cheap liveness probe for supervisors, Docker healthchecks and uptime monitors."""
+    active = sum(1 for job in queue.jobs.values() if job.status.value == "running")
+    return {
+        "status": "ok",
+        "version": __version__,
+        "jobs": len(queue.jobs),
+        "active": active,
+        "ffmpeg": settings.ffmpeg_available,
+        "sniffer": settings.playwright_available,
+    }
+
+
+@app.get("/api/settings")
+async def get_settings() -> dict:
+    return runtime.public()
+
+
+@app.patch("/api/settings")
+async def patch_settings(payload: dict) -> dict:
+    """Partial update. Unknown keys are ignored; values are clamped to their range."""
+    try:
+        changed = runtime.update(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed:
+        queue.apply_settings()
+    return {"changed": changed, **runtime.public()}
+
+
+@app.post("/api/settings/reset")
+async def reset_settings() -> dict:
+    runtime.reset()
+    queue.apply_settings()
+    return runtime.public()
 
 
 @app.post("/api/detect", status_code=202)

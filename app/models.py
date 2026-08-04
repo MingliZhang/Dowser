@@ -97,6 +97,13 @@ class Job(BaseModel):
     started_at: float | None = None
     finished_at: float | None = None
 
+    #: Last moment this job actually moved — the basis for stall detection.
+    last_progress_at: float | None = None
+    #: Automatic attempts so far. Reset when a human hits Retry.
+    retry_count: int = 0
+    #: When the queue should pick this job back up after a failure.
+    retry_at: float | None = None
+
     def public(self) -> dict[str, Any]:
         data = self.model_dump(mode="json")
         data["stream"] = {

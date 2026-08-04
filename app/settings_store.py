@@ -1,0 +1,203 @@
+"""Runtime-tunable settings.
+
+Environment variables provide the defaults; the UI can override any of them and
+the result is persisted. Adding a new knob means appending one entry to SCHEMA —
+the settings panel renders itself from it, so no frontend change is needed.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Literal
+
+from .config import settings
+
+Kind = Literal["int", "bool"]
+
+
+@dataclass(frozen=True)
+class Knob:
+    key: str
+    label: str
+    kind: Kind
+    default: Any
+    group: str
+    help: str = ""
+    unit: str = ""
+    minimum: int | None = None
+    maximum: int | None = None
+    #: Changes take effect on the next job/detection rather than immediately.
+    deferred: bool = False
+
+
+def _schema() -> tuple[Knob, ...]:
+    return (
+        Knob(
+            key="max_concurrent",
+            label="Parallel downloads",
+            kind="int",
+            default=settings.max_concurrent,
+            group="Downloads",
+            minimum=1,
+            maximum=10,
+            help="How many downloads run at the same time. Applies immediately.",
+        ),
+        Knob(
+            key="stall_timeout",
+            label="Stall timeout",
+            kind="int",
+            default=settings.stall_timeout,
+            group="Recovery",
+            unit="seconds",
+            minimum=0,
+            maximum=3600,
+            help=(
+                "A running download that makes no progress for this long is "
+                "treated as stuck and killed. 0 disables stall detection."
+            ),
+        ),
+        Knob(
+            key="auto_retry",
+            label="Retry automatically",
+            kind="bool",
+            default=settings.auto_retry,
+            group="Recovery",
+            help="Re-run downloads that fail or stall. Cancelling by hand never retries.",
+        ),
+        Knob(
+            key="retry_delay",
+            label="Wait before retrying",
+            kind="int",
+            default=settings.retry_delay,
+            group="Recovery",
+            unit="seconds",
+            minimum=1,
+            maximum=3600,
+            help="How long to wait after a failure before starting the download over.",
+        ),
+        Knob(
+            key="max_retries",
+            label="Retry attempts",
+            kind="int",
+            default=settings.max_retries,
+            group="Recovery",
+            minimum=0,
+            maximum=20,
+            help="Give up after this many automatic attempts. Manual retry resets the count.",
+        ),
+        Knob(
+            key="sniff_timeout",
+            label="Page scan time",
+            kind="int",
+            default=settings.sniff_timeout,
+            group="Detection",
+            unit="seconds",
+            minimum=5,
+            maximum=180,
+            deferred=True,
+            help="How long to watch each page's network traffic. Raise it for slow players.",
+        ),
+        Knob(
+            key="sniff_headless",
+            label="Headless browser",
+            kind="bool",
+            default=settings.sniff_headless,
+            group="Detection",
+            deferred=True,
+            help="Turn off to watch the browser work — useful for pages behind a bot check.",
+        ),
+        Knob(
+            key="sniff_autoplay",
+            label="Click play & consent buttons",
+            kind="bool",
+            default=settings.sniff_autoplay,
+            group="Detection",
+            deferred=True,
+            help="Dismiss cookie walls and start players so they load their stream.",
+        ),
+    )
+
+
+class SettingsStore:
+    """Mutable settings with validation, persistence, and a UI schema."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.schema: tuple[Knob, ...] = _schema()
+        self.values: dict[str, Any] = {knob.key: knob.default for knob in self.schema}
+        self._by_key = {knob.key: knob for knob in self.schema}
+        self._load()
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached when normal attribute lookup fails, so self.values is safe.
+        values = self.__dict__.get("values", {})
+        if name in values:
+            return values[name]
+        raise AttributeError(name)
+
+    def coerce(self, knob: Knob, raw: Any) -> Any:
+        if knob.kind == "bool":
+            if isinstance(raw, str):
+                return raw.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(raw)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{knob.label} must be a whole number") from exc
+        if knob.minimum is not None:
+            value = max(knob.minimum, value)
+        if knob.maximum is not None:
+            value = min(knob.maximum, value)
+        return value
+
+    def update(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Apply a partial update; unknown keys are ignored, values are clamped."""
+        changed: dict[str, Any] = {}
+        for key, raw in (patch or {}).items():
+            knob = self._by_key.get(key)
+            if knob is None:
+                continue
+            value = self.coerce(knob, raw)
+            if self.values.get(key) != value:
+                self.values[key] = value
+                changed[key] = value
+        if changed:
+            self._save()
+        return changed
+
+    def reset(self) -> dict[str, Any]:
+        self.values = {knob.key: knob.default for knob in self.schema}
+        self._save()
+        return self.values
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "values": dict(self.values),
+            "schema": [asdict(knob) for knob in self.schema],
+        }
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError:
+            pass
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            stored = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        for key, raw in (stored or {}).items():
+            if knob := self._by_key.get(key):
+                try:
+                    self.values[key] = self.coerce(knob, raw)
+                except ValueError:
+                    continue
+
+
+runtime = SettingsStore(settings.settings_file)

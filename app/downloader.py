@@ -23,6 +23,7 @@ import httpx
 
 from .config import settings
 from .models import Job, Stream
+from .settings_store import runtime
 
 ProgressFn = Callable[[dict], None]
 
@@ -63,7 +64,20 @@ async def _run_http(job: Job, temp_path: Path, on_progress: ProgressFn) -> Path:
     stream = job.stream
     headers = {"User-Agent": settings.user_agent, **_clean_headers(stream.headers)}
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=60.0, verify=False) as client:
+    # The queue's stall watchdog should be the authority on "this is stuck", so
+    # give httpx a slightly longer read window than the configured stall timeout.
+    # Otherwise a wedged transfer is reported as a transport error and the user's
+    # setting appears to do nothing. With stall detection off, keep a fixed bound
+    # so a dead socket still cannot hang forever.
+    stall = runtime.stall_timeout
+    timeout = httpx.Timeout(
+        connect=20.0,
+        read=(stall + 15) if stall > 0 else 60.0,
+        write=30.0,
+        pool=20.0,
+    )
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, verify=False) as client:
         async with client.stream("GET", stream.url, headers=headers) as response:
             if response.status_code >= 400:
                 raise DownloadError(f"HTTP {response.status_code} fetching the media file")

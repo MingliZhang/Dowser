@@ -12,6 +12,7 @@ import contextlib
 from dataclasses import dataclass, field
 
 from ..config import settings
+from ..settings_store import runtime
 from .classify import Captured, classify, dedupe_key, is_noise, looks_like_segment
 
 #: Clicked (best effort) to get a player to start loading its stream.
@@ -67,9 +68,11 @@ async def sniff(
     except ImportError:
         return SniffResult(notes=["Playwright is not installed — network capture skipped."])
 
-    timeout = timeout or settings.sniff_timeout
-    headless = settings.sniff_headless if headless is None else headless
-    autoplay = settings.sniff_autoplay if autoplay is None else autoplay
+    # Defaults come from the live settings, so the UI can retune detection
+    # without a restart.
+    timeout = timeout or runtime.sniff_timeout
+    headless = runtime.sniff_headless if headless is None else headless
+    autoplay = runtime.sniff_autoplay if autoplay is None else autoplay
 
     result = SniffResult(final_url=url)
     seen: dict[str, Captured] = {}

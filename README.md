@@ -87,6 +87,28 @@ HLS variant playlists are frequently video-only, with audio in a separate
 rendition. When that is the case the audio playlist is passed to `ffmpeg` as a
 second input and muxed in, so you do not end up with a silent file.
 
+### Recovery: stalls and retries
+
+Downloads do not only fail loudly. A CDN can accept the connection, send a few
+hundred kilobytes, and then go silent forever — `ffmpeg` will happily sit on
+that dead socket until someone notices. So a watchdog tracks the last moment
+each job actually *moved*:
+
+- Progress that repeats itself does not count. `ffmpeg` keeps emitting progress
+  lines when a transfer is wedged, so only a genuine increase in bytes or
+  percentage resets the clock.
+- A job that has not moved for **Stall timeout** seconds is killed and marked
+  stalled.
+- Stalled and failed jobs are re-run after **Wait before retrying**, up to
+  **Retry attempts** times, then left alone with what went wrong.
+- Cancelling by hand never retries — an explicit stop means stop. Pressing
+  **Retry now** resets the automatic budget.
+- If the process dies mid-download, jobs come back as failed on restart with a
+  retry armed, so an unattended server picks up where it left off.
+
+Retries start the file over rather than resuming; a partly written file is
+deleted rather than left to confuse you.
+
 ---
 
 ## Install and run
@@ -173,23 +195,102 @@ folder.
 
 ---
 
-## Configuration
+## Settings
 
-Copy `.env.example` to `.env` and edit, or export the variables directly.
+The **Settings** panel in the UI holds the knobs worth changing while the thing
+is running. Edits save as you type and persist to `settings.json`.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Parallel downloads | 2 | Applies immediately, even to jobs already queued |
+| Stall timeout | 90s | No progress for this long → killed as stuck. `0` disables |
+| Retry automatically | on | Re-run jobs that fail or stall |
+| Wait before retrying | 30s | Pause before starting a failed download over |
+| Retry attempts | 3 | Give up after this many automatic tries |
+| Page scan time | 25s | How long to watch each page's traffic — raise for slow players |
+| Headless browser | on | Turn off to watch the browser work |
+| Click play & consent buttons | on | Dismiss cookie walls and start players |
+
+Settings marked *· next run* apply to the next detection or download rather
+than to work already in flight.
+
+> **Adding a knob later.** The panel builds itself from a schema the server
+> sends, so a new setting is one entry in `SCHEMA` in `app/settings_store.py` —
+> no frontend change. Tell me what you want tunable and it is a few lines.
+
+### Environment variables
+
+`.env` values are the *starting defaults*. Once a setting is changed in the UI
+the stored value wins, so editing `.env` afterwards has no effect — reset from
+the panel (or delete `settings.json`) to go back to it.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8081` | HTTP port |
 | `HOST` | `127.0.0.1` | Bind address (Docker sets `0.0.0.0`) |
 | `DOWNLOAD_DIR` | `./downloads` | Where finished videos land |
-| `MAX_CONCURRENT_DOWNLOADS` | `2` | Parallel downloads |
-| `SNIFF_TIMEOUT` | `25` | Seconds to watch each page — raise for slow players |
-| `SNIFF_HEADLESS` | `true` | Set `false` to watch the browser work |
-| `SNIFF_AUTOPLAY` | `true` | Click play/consent buttons |
-| `ENABLE_SNIFFER` | `true` | Turn off network capture entirely |
+| `STATE_FILE` / `SETTINGS_FILE` | `./state.json`, `./settings.json` | Persistence |
+| `MAX_CONCURRENT_DOWNLOADS` | `2` | Default for Parallel downloads |
+| `STALL_TIMEOUT` | `90` | Default for Stall timeout |
+| `AUTO_RETRY` / `RETRY_DELAY` / `MAX_RETRIES` | `true` / `30` / `3` | Retry defaults |
+| `SNIFF_TIMEOUT` / `SNIFF_HEADLESS` / `SNIFF_AUTOPLAY` | `25` / `true` / `true` | Detection defaults |
+| `ENABLE_SNIFFER` | `true` | Turn off network capture entirely (not in the UI) |
 | `COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `safari`… to reuse a logged-in session |
 | `COOKIES_FILE` | — | Path to a `cookies.txt` instead |
 | `FFMPEG_PATH` | `ffmpeg` | Override binary locations |
+
+---
+
+## Running it 24/7
+
+Ready-made service definitions are in [`deploy/`](deploy/). All of them restart
+the app if it crashes, and shut it down with `SIGINT` so in-flight `ffmpeg`
+children die cleanly instead of leaving partial files behind.
+
+**Linux home server (systemd)** — the usual choice:
+
+```bash
+sudo cp deploy/dowser.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dowser
+journalctl -u dowser -f
+```
+
+Edit `User`, `WorkingDirectory`, and `ReadWritePaths` first. If your download
+folder is outside the project directory it **must** be listed in
+`ReadWritePaths` or the service cannot write to it.
+
+**Inside an existing container, alongside MeTube** — use
+`deploy/supervisord-dowser.conf`. Drop it in the container's supervisor include
+directory and `supervisorctl reread && supervisorctl update`. The container
+needs `ffmpeg` plus Chromium; install both with:
+
+```bash
+pip install -r requirements.txt && python -m playwright install --with-deps chromium
+```
+
+If Chromium genuinely will not fit, `ENABLE_SNIFFER=false` still runs — but that
+turns off the network capture, which is the whole point of Dowser, leaving only
+the yt-dlp fallback. Prefer giving it Chromium.
+
+**Its own container:** `docker compose up -d`. It sets `restart: unless-stopped`
+and has a healthcheck, so Docker restarts it if the app wedges.
+
+**macOS:** `deploy/com.dowser.plist` → `~/Library/LaunchAgents/`, then
+`launchctl load -w ~/Library/LaunchAgents/com.dowser.plist`.
+
+Point a monitor at `GET /api/health` — it returns the version, job counts, and
+whether ffmpeg and the sniffer are usable.
+
+### Running next to MeTube
+
+Give each app its own port and its own folder. Two things to keep in mind:
+
+- **Different ports.** MeTube's default is 8081, which is also Dowser's. Change
+  one of them (`PORT=8082`).
+- **Different download folders**, or at least a Subfolder. Both name files after
+  a title, so a shared folder invites collisions. Dowser never overwrites — it
+  adds ` (2)` — but separate folders are cleaner.
 
 ---
 
@@ -221,10 +322,11 @@ Please only download material you have the rights to.
 ```
 app/
   main.py              FastAPI routes, WebSocket, static hosting
-  config.py            Environment-driven settings
+  config.py            Environment-driven startup settings
+  settings_store.py    UI-tunable settings + the schema the panel renders from
   models.py            Stream / Job / request shapes
   naming.py            Title sanitizing, 1-2-3 numbering, collision handling
-  jobs.py              Queue, concurrency, live broadcast, JSON persistence
+  jobs.py              Queue, concurrency, stall watchdog, retries, persistence
   downloader.py        ffmpeg / HTTP / yt-dlp execution and progress parsing
   detector/
     __init__.py        The pipeline: capture → classify → expand → fallback
@@ -233,6 +335,7 @@ app/
     manifest.py        HLS + DASH parsing into quality variants
     ytdlp_probe.py     Extractor fallback
 static/                Vanilla-JS UI, no build step
+deploy/                systemd, supervisord and launchd service definitions
 ```
 
 State (queue + detection history) is persisted to `state.json` and reloaded on
@@ -248,6 +351,9 @@ The UI is a client of this, and it is fine to script against.
 | `POST` | `/api/download` | `{"page_url", "title", "items": [{"stream": {...}}], "subfolder"}` |
 | `GET` | `/api/state` | Full queue + detection snapshot |
 | `WS` | `/ws` | Same snapshot, pushed on every change |
+| `GET` | `/api/health` | Liveness probe for supervisors and uptime monitors |
+| `GET` · `PATCH` | `/api/settings` | Read settings + schema; PATCH a partial update |
+| `POST` | `/api/settings/reset` | Back to the `.env` defaults |
 | `POST` | `/api/jobs/{id}/cancel` · `/retry` | |
 | `DELETE` | `/api/jobs/{id}` | |
 | `POST` | `/api/queue/clear` | Drops finished jobs |
@@ -266,6 +372,12 @@ second detect usually catches it.
 **Download fails with a 403.**
 The stream needs a session cookie. Set `COOKIES_FROM_BROWSER=chrome` and detect
 again so the capture carries the authenticated request.
+
+**A download keeps stalling and retrying.**
+Some CDNs throttle hard enough to look dead. Raise **Stall timeout** — the
+default of 90s is aggressive for a slow server. If it stalls at the same byte
+count every time, the stream likely needs a session cookie that has since
+expired; detect the page again to capture fresh headers.
 
 **Video downloads but has no audio.**
 The variant was video-only and the audio rendition was not advertised in the

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for keeping Dowser running on macOS.
+
+    cp deploy/com.dowser.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.dowser.plist
+    launchctl list | grep dowser
+
+  Replace /Users/CHANGEME/dowser with the real project path in all four spots.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dowser</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/CHANGEME/dowser/.venv/bin/python</string>
+        <string>-m</string>
+        <string>app.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGEME/dowser</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/CHANGEME/dowser/dowser.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/CHANGEME/dowser/dowser.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

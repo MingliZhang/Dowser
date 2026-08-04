@@ -62,6 +62,8 @@ const local = new Map();          // url -> { title, selected:Set<streamId>, tou
 const cardKeys = new Map();       // url -> signature of the last render
 const jobNodes = new Map();       // jobId -> element
 let serverSettings = {};
+/** Server clock from the last snapshot — retry countdowns use it, not ours. */
+let serverNow = Date.now() / 1000;
 
 function localFor(url, detection) {
   let entry = local.get(url);
@@ -99,9 +101,98 @@ function connect() {
 
 function render(state) {
   serverSettings = state.settings || {};
+  serverNow = state.now || Date.now() / 1000;
   renderCapabilities(serverSettings);
+  renderSettings(serverSettings.schema, serverSettings.values);
   renderDetections(state.detections || []);
   renderJobs(state.jobs || []);
+}
+
+/* ---------------------------------------------------------------- settings */
+
+let settingsBuilt = false;
+const settingsTimers = new Map();
+
+/**
+ * The form is generated from the server's schema, so a new setting appears here
+ * automatically — no changes needed in this file.
+ */
+function renderSettings(schema, values) {
+  if (!schema || !values) return;
+
+  if (!settingsBuilt) {
+    const groups = [];
+    schema.forEach((knob) => {
+      let group = groups.find((g) => g.name === knob.group);
+      if (!group) groups.push((group = { name: knob.group, knobs: [] }));
+      group.knobs.push(knob);
+    });
+
+    $('#settings-form').innerHTML = groups.map((group) => `
+      <div class="settings-group">
+        <h3>${esc(group.name)}</h3>
+        ${group.knobs.map((knob) => `
+          <div class="setting ${knob.deferred ? 'deferred' : ''}">
+            <span class="setting-label">${esc(knob.label)}</span>
+            <span class="setting-control">
+              ${knob.kind === 'bool'
+                ? `<input type="checkbox" data-key="${esc(knob.key)}" />`
+                : `<input type="number" data-key="${esc(knob.key)}"
+                     min="${knob.minimum ?? ''}" max="${knob.maximum ?? ''}" step="1" />
+                   <span class="setting-unit">${esc(knob.unit || '')}</span>`}
+            </span>
+            <span class="setting-help">${esc(knob.help || '')}</span>
+          </div>`).join('')}
+      </div>`).join('');
+
+    $('#settings-form').querySelectorAll('[data-key]').forEach((input) => {
+      const event = input.type === 'checkbox' ? 'change' : 'input';
+      input.addEventListener(event, () => scheduleSave(input));
+    });
+    settingsBuilt = true;
+  }
+
+  // Never overwrite the field someone is currently editing.
+  $('#settings-form').querySelectorAll('[data-key]').forEach((input) => {
+    if (input === document.activeElement) return;
+    const value = values[input.dataset.key];
+    if (value === undefined) return;
+    if (input.type === 'checkbox') input.checked = Boolean(value);
+    else if (input.value !== String(value)) input.value = value;
+  });
+}
+
+function scheduleSave(input) {
+  const key = input.dataset.key;
+  clearTimeout(settingsTimers.get(key));
+  settingsTimers.set(key, setTimeout(async () => {
+    const value = input.type === 'checkbox' ? input.checked : Number(input.value);
+    if (input.type === 'number' && !Number.isFinite(value)) return;
+    try {
+      const result = await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ [key]: value }),
+      });
+      // The server clamps out-of-range values; show what it actually stored.
+      const stored = result.values?.[key];
+      if (stored !== undefined && input !== document.activeElement) {
+        if (input.type === 'checkbox') input.checked = Boolean(stored);
+        else input.value = stored;
+      }
+      flashSaved();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }, 400));
+}
+
+let savedTimer;
+function flashSaved() {
+  const el = $('#settings-saved');
+  el.textContent = 'Saved';
+  el.classList.add('show');
+  clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => el.classList.remove('show'), 1400);
 }
 
 function renderCapabilities(settings) {
@@ -335,6 +426,14 @@ function paintJob(node, job) {
   } else if (job.message) {
     bits.push(job.message);
   }
+
+  const maxRetries = serverSettings.values?.max_retries;
+  if (job.retry_count) {
+    bits.push(`retry ${job.retry_count}${maxRetries ? ` of ${maxRetries}` : ''}`);
+  }
+  if (job.retry_at) {
+    bits.push(`next attempt in ${Math.max(0, Math.round(job.retry_at - serverNow))}s`);
+  }
   bits.push(job.stream?.label || '');
 
   const indeterminate = job.status === 'running' && job.percent == null;
@@ -359,8 +458,9 @@ function paintJob(node, job) {
            <button class="tiny reveal">Show in folder</button>` : ''}
       ${job.status === 'running' || job.status === 'queued'
         ? '<button class="tiny cancel">Cancel</button>' : ''}
+      ${job.retry_at ? '<button class="tiny cancel">Stop retrying</button>' : ''}
       ${job.status === 'error' || job.status === 'cancelled'
-        ? '<button class="tiny retry">Retry</button>' : ''}
+        ? '<button class="tiny retry">Retry now</button>' : ''}
       ${job.status !== 'running' ? '<button class="ghost tiny remove">✕</button>' : ''}
     </div>
     <div class="${barClass}"><span style="width:${width}%"></span></div>`;
@@ -408,6 +508,16 @@ $('#urls').addEventListener('keydown', (event) => {
 
 $('#clear-finished').addEventListener('click', () =>
   api('/api/queue/clear', { method: 'POST' }).catch((e) => toast(e.message, true)));
+
+$('#reset-settings').addEventListener('click', async () => {
+  try {
+    const result = await api('/api/settings/reset', { method: 'POST' });
+    renderSettings(result.schema, result.values);
+    flashSaved();
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
 
 $('#clear-detections').addEventListener('click', async () => {
   local.clear();

@@ -27,4 +27,9 @@ RUN mkdir -p /downloads /config
 VOLUME ["/downloads", "/config"]
 EXPOSE 8081
 
+# Lets Docker/compose restart the container if the app wedges.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import sys,urllib.request; \
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/api/health', timeout=4).status == 200 else 1)"
+
 CMD ["python", "-m", "app.main"]

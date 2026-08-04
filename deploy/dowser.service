@@ -1,0 +1,49 @@
+# systemd unit for running Dowser 24/7 on a Linux home server.
+#
+#   sudo cp deploy/dowser.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dowser
+#   journalctl -u dowser -f          # follow the logs
+#
+# Edit User/Group and the three paths below to match your server.
+
+[Unit]
+Description=Dowser — finds and downloads video streams from any page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dowser
+Group=dowser
+
+WorkingDirectory=/opt/dowser
+EnvironmentFile=-/opt/dowser/.env
+ExecStart=/opt/dowser/.venv/bin/python -m app.main
+
+# Restart on any exit, including a crash mid-download. Queued jobs are
+# persisted, and interrupted ones re-arm themselves when auto-retry is on.
+Restart=always
+RestartSec=5
+
+# SIGINT lets uvicorn shut down cleanly so in-flight ffmpeg children are killed
+# and partial files are removed rather than left behind.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dowser
+
+# Light hardening. If your download folder lives outside WorkingDirectory, add
+# it to ReadWritePaths or the service will not be able to write there.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/dowser /srv/media/downloads
+
+[Install]
+WantedBy=multi-user.target

@@ -218,6 +218,85 @@ main {
 }
 .notes div + div { margin-top: 3px; }
 
+/* --- settings ------------------------------------------------------------- */
+
+.settings-panel { padding: 0; }
+.settings-panel summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 16px 18px;
+  user-select: none;
+}
+.settings-panel summary::-webkit-details-marker { display: none; }
+.summary-row { display: flex; align-items: center; gap: 10px; }
+.summary-row::before {
+  content: "▸";
+  color: var(--muted);
+  transition: transform .15s;
+  display: inline-block;
+}
+details[open] .summary-row::before { transform: rotate(90deg); }
+.settings-panel summary:hover .counter { color: var(--text); }
+
+#settings-form { padding: 0 18px; }
+.settings-group + .settings-group { margin-top: 18px; }
+.settings-group > h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  font-weight: 700;
+}
+.setting {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 16px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #131922;
+  margin-bottom: 8px;
+}
+.setting-label { grid-column: 1; grid-row: 1; font-size: 13.5px; font-weight: 600; }
+.setting-help { grid-column: 1; grid-row: 2; color: var(--muted); font-size: 12.5px; }
+.setting-control {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.setting-control input[type="number"] {
+  width: 92px;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font: inherit;
+  padding: 7px 9px;
+  text-align: right;
+}
+.setting-control input[type="number"]:focus { outline: none; border-color: var(--accent); }
+.setting-control input[type="checkbox"] { width: 17px; height: 17px; }
+.setting-unit { color: var(--muted); font-size: 12.5px; min-width: 52px; }
+.setting.deferred .setting-label::after {
+  content: " · next run";
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11.5px;
+}
+.settings-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 18px 18px;
+}
+.saved-flash { color: var(--ok); font-size: 12.5px; opacity: 0; transition: opacity .2s; }
+.saved-flash.show { opacity: 1; }
+
 /* --- queue ---------------------------------------------------------------- */
 
 .job {

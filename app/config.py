@@ -40,8 +40,16 @@ class Settings:
     )
     #: Queue + history persistence.
     state_file: Path = field(default_factory=lambda: _env_path("STATE_FILE", "./state.json"))
+    #: UI-tunable settings; these values are only the starting defaults.
+    settings_file: Path = field(default_factory=lambda: _env_path("SETTINGS_FILE", "./settings.json"))
 
     max_concurrent: int = field(default_factory=lambda: _env_int("MAX_CONCURRENT_DOWNLOADS", 2))
+
+    #: Seconds a running download may make no progress before it counts as stuck.
+    stall_timeout: int = field(default_factory=lambda: _env_int("STALL_TIMEOUT", 90))
+    auto_retry: bool = field(default_factory=lambda: _env_bool("AUTO_RETRY", True))
+    retry_delay: int = field(default_factory=lambda: _env_int("RETRY_DELAY", 30))
+    max_retries: int = field(default_factory=lambda: _env_int("MAX_RETRIES", 3))
 
     ffmpeg: str = field(default_factory=lambda: os.getenv("FFMPEG_PATH", "ffmpeg"))
     ffprobe: str = field(default_factory=lambda: os.getenv("FFPROBE_PATH", "ffprobe"))
