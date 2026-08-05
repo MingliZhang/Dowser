@@ -15,7 +15,21 @@ from dataclasses import dataclass, field
 
 from ..config import settings
 from ..settings_store import runtime
-from .classify import Captured, classify, dedupe_key, is_noise, looks_like_segment
+from .classify import (
+    MIN_FILE_BYTES,
+    Captured,
+    classify,
+    dedupe_key,
+    is_noise,
+    looks_like_segment,
+)
+
+#: How often ``_settle`` checks whether the page has given up a stream yet.
+POLL_INTERVAL = 0.1
+#: Extra seconds allowed after the page stops fetching but has shown us nothing.
+#: A player that boots late gets this much; sitting out the whole budget for a
+#: page that has gone completely quiet almost never turns anything up.
+IDLE_GRACE = 4.0
 
 
 def _launch_args() -> list[str]:
@@ -157,6 +171,21 @@ REPLAY_HEADERS = {"referer", "origin", "cookie", "user-agent", "authorization", 
 
 
 @dataclass
+class _Watch:
+    """Shared state between the response recorder and the settle loop."""
+
+    #: Set once a capture answers "what can I download from this page?".
+    found: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Loop time of the most recent new, non-segment capture. Segments are
+    #: excluded deliberately: they keep arriving for as long as the stream
+    #: plays, so counting them would mean never finishing early.
+    last_media: float = 0.0
+
+    def note_media(self) -> None:
+        self.last_media = asyncio.get_running_loop().time()
+
+
+@dataclass
 class SniffResult:
     title: str = ""
     final_url: str = ""
@@ -187,6 +216,7 @@ async def sniff(
     result = SniffResult(final_url=url)
     seen: dict[str, Captured] = {}
     lock = asyncio.Lock()
+    watch = _Watch()
 
     async def record(response) -> None:
         try:
@@ -202,6 +232,7 @@ async def sniff(
 
             segment = looks_like_segment(req_url, content_type)
             key = dedupe_key(req_url)
+            size = _total_size(response.headers or {})
 
             async with lock:
                 if segment:
@@ -209,34 +240,44 @@ async def sniff(
                 if key in seen:
                     # Byte-range follow-ups: keep the largest known total size.
                     existing = seen[key]
-                    size = _total_size(response.headers or {})
                     if size and (existing.size or 0) < size:
                         existing.size = size
                     return
-
-                try:
-                    raw_headers = await request.all_headers()
-                except Exception:  # noqa: BLE001
-                    raw_headers = dict(request.headers or {})
-
-                headers = {
-                    k.title(): v
-                    for k, v in raw_headers.items()
-                    if k.lower() in REPLAY_HEADERS and v
-                }
-                headers.setdefault("Referer", response.frame.url if response.frame else url)
-
-                seen[key] = Captured(
+                frame_url = response.frame.url if response.frame else ""
+                # Claim the key before the await below, so two responses racing
+                # for the same media URL cannot both go on to fetch headers. The
+                # Referer stands in until the real headers land, so a capture is
+                # never left without the one header a CDN is likely to demand.
+                seen[key] = capture = Captured(
                     url=req_url,
                     kind=kind,
                     content_type=content_type,
                     status=response.status,
-                    size=_total_size(response.headers or {}),
-                    headers=headers,
+                    size=size,
+                    headers={"Referer": frame_url or url},
                     is_segment=segment,
-                    frame_url=response.frame.url if response.frame else "",
+                    frame_url=frame_url,
                     method=request.method,
                 )
+
+            # Outside the lock: this is a round trip to the browser, and holding
+            # the lock across it would serialise every other response behind it.
+            try:
+                raw_headers = await request.all_headers()
+            except Exception:  # noqa: BLE001
+                raw_headers = dict(request.headers or {})
+
+            capture.headers = {
+                k.title(): v
+                for k, v in raw_headers.items()
+                if k.lower() in REPLAY_HEADERS and v
+            }
+            capture.headers.setdefault("Referer", capture.frame_url or url)
+
+            if not segment:
+                watch.note_media()
+            if _is_enough(capture):
+                watch.found.set()
         except Exception:  # noqa: BLE001 - a bad response must never kill the sniff
             return
 
@@ -288,7 +329,7 @@ async def sniff(
                 await _nudge_players(page)
 
             # Let the player fetch its manifest and first segments.
-            await _settle(page, timeout)
+            await _settle(page, timeout, watch, runtime.sniff_settle_grace)
 
             # Title again — SPAs often set it after the player boots.
             if late_title := await _read_title(page):
@@ -325,15 +366,17 @@ async def _dismiss_consent(page) -> None:
     for selector in CONSENT_SELECTORS:
         with contextlib.suppress(Exception):
             locator = page.locator(selector).first
-            if await locator.is_visible(timeout=400):
+            # is_visible does not wait; it answers from the current DOM.
+            if await locator.is_visible():
                 await locator.click(timeout=1200, force=True)
-                await page.wait_for_timeout(300)
+                await page.wait_for_timeout(200)
                 return
 
 
 async def _nudge_players(page) -> None:
     """Try hard to make a player start, in the main frame and every iframe."""
-    for frame in [page.main_frame, *page.frames]:
+    # page.frames already includes the main frame.
+    for frame in page.frames:
         with contextlib.suppress(Exception):
             await frame.evaluate(
                 """() => {
@@ -346,24 +389,70 @@ async def _nudge_players(page) -> None:
     for selector in PLAY_SELECTORS:
         with contextlib.suppress(Exception):
             locator = page.locator(selector).first
-            if await locator.is_visible(timeout=350):
+            # is_visible does not wait; it answers from the current DOM.
+            if await locator.is_visible():
                 await locator.click(timeout=1500, force=True)
-                await page.wait_for_timeout(800)
+                # Just long enough for the click to reach the player. Waiting for
+                # the stream itself is _settle's job.
+                await page.wait_for_timeout(250)
                 break
 
     # Lazy-loaded players below the fold.
     with contextlib.suppress(Exception):
         await page.evaluate("() => window.scrollBy(0, window.innerHeight)")
-        await page.wait_for_timeout(400)
 
 
-async def _settle(page, timeout: int) -> None:
-    """Wait for the network to go quiet, but never longer than the budget."""
-    deadline = timeout * 1000
+def _is_enough(capture: Captured) -> bool:
+    """Does this capture already answer "what can I download from this page?"
+
+    A manifest describes the whole stream, so one is the complete answer. HDS is
+    deliberately excluded: we can detect it but not download it, so seeing one is
+    a reason to keep looking for an HLS or DASH version, not to stop.
+    """
+    if capture.is_segment:
+        return False
+    if capture.kind in {"hls", "dash", "smooth", "live"}:
+        return True
+    # Matches the size floor a file has to clear to become a stream at all.
+    return capture.kind == "file" and (capture.size is None or capture.size >= MIN_FILE_BYTES)
+
+
+async def _quiet(page, timeout: int) -> None:
+    """Resolves once the page stops making requests. Never raises."""
     with contextlib.suppress(Exception):
-        await page.wait_for_load_state("networkidle", timeout=min(deadline, 8000))
-    with contextlib.suppress(Exception):
-        await page.wait_for_timeout(min(max(deadline - 8000, 2500), 12000))
+        await page.wait_for_load_state("networkidle", timeout=timeout * 1000)
+
+
+async def _settle(page, timeout: int, watch: _Watch, grace: float) -> None:
+    """Collect until the page has given up its streams, then stop.
+
+    This used to sit out a fixed ~20 seconds on every page. In practice a player
+    reveals its manifest a second or two after it boots and everything past that
+    is more segments of the same stream, so we leave once we have a stream and
+    the page has stopped producing new media for ``grace`` seconds.
+
+    The window is measured from the last new capture rather than the first, so a
+    page that keeps turning up media — extra qualities, audio renditions,
+    subtitle tracks, a second video — keeps us here, while a page that is done
+    lets us go. The scan budget is still the hard ceiling.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    quiet = asyncio.create_task(_quiet(page, timeout))
+    shortened = False
+    try:
+        while loop.time() < deadline:
+            if watch.found.is_set() and loop.time() - watch.last_media >= grace:
+                return
+            # Nothing captured and nothing left in flight: give a late-booting
+            # player one short window instead of the remaining budget.
+            if not watch.found.is_set() and quiet.done() and not shortened:
+                deadline = min(deadline, loop.time() + IDLE_GRACE)
+                shortened = True
+            await asyncio.sleep(POLL_INTERVAL)
+    finally:
+        quiet.cancel()
 
 
 def _total_size(headers: dict[str, str]) -> int | None:

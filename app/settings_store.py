@@ -184,7 +184,27 @@ def _schema() -> tuple[Knob, ...]:
             minimum=5,
             maximum=180,
             deferred=True,
-            help="How long to watch each page's network traffic. Raise it for slow players.",
+            help=(
+                "The longest a scan may watch a page's network traffic. Most "
+                "scans finish well inside this, because they stop as soon as a "
+                "stream appears — raise it only for players that boot slowly."
+            ),
+        ),
+        Knob(
+            key="sniff_settle_grace",
+            label="Extra time after a stream appears",
+            kind="int",
+            default=settings.sniff_settle_grace,
+            group="Detection",
+            unit="seconds",
+            minimum=0,
+            maximum=30,
+            deferred=True,
+            help=(
+                "Once a stream is found the scan keeps watching this much longer, "
+                "which is what catches the other qualities and subtitle tracks "
+                "that follow it. Raise it if a site keeps offering only one quality."
+            ),
         ),
         Knob(
             key="sniff_headless",

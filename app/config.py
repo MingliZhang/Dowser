@@ -70,8 +70,12 @@ class Settings:
 
     #: Load the page in a headless browser and watch its network traffic.
     sniffer_enabled: bool = field(default_factory=lambda: _env_bool("ENABLE_SNIFFER", True))
-    #: Seconds to let the page run before we stop collecting requests.
+    #: Seconds to let the page run before we stop collecting requests. This is
+    #: the ceiling, not the usual cost — a scan stops as soon as it has a stream.
     sniff_timeout: int = field(default_factory=lambda: _env_int("SNIFF_TIMEOUT", 25))
+    #: Seconds to keep watching after the first stream appears, to pick up the
+    #: other qualities and subtitle tracks that arrive just behind it.
+    sniff_settle_grace: int = field(default_factory=lambda: _env_int("SNIFF_SETTLE_GRACE", 3))
     sniff_headless: bool = field(default_factory=lambda: _env_bool("SNIFF_HEADLESS", True))
     #: Try clicking play/consent buttons to coax a player into loading its stream.
     sniff_autoplay: bool = field(default_factory=lambda: _env_bool("SNIFF_AUTOPLAY", True))

@@ -1,6 +1,7 @@
 """Detection pipeline: page URL in, list of downloadable streams out."""
 from __future__ import annotations
 
+import asyncio
 import posixpath
 from urllib.parse import unquote, urlparse
 
@@ -8,11 +9,15 @@ from ..config import settings
 from ..models import DetectResult, Stream
 from . import manifest as manifest_mod
 from . import ytdlp_probe
-from .classify import Captured, classify, container_for, guess_container
+from .classify import (
+    MIN_FILE_BYTES,
+    Captured,
+    classify,
+    container_for,
+    guess_container,
+)
 from .sniffer import sniff
 
-#: Media files below this are almost always tracking pixels or ad bumpers.
-MIN_FILE_BYTES = 100_000
 MAX_STREAMS = 40
 
 
@@ -66,8 +71,20 @@ async def detect(url: str, quick: bool = False, allow_fallback: bool = True) -> 
                 "with SNIFF_HEADLESS=false / a longer SNIFF_TIMEOUT."
             )
 
-        for capture in _rank_captures(_drop_stream_members(media)):
-            streams.extend(await _streams_from_capture(capture, notes))
+        # Each capture may need its manifest fetched, so run them together rather
+        # than paying one round trip after another. Notes are collected per
+        # capture and merged in rank order, so the output stays deterministic.
+        ranked = _rank_captures(_drop_stream_members(media))
+        per_capture: list[list[str]] = [[] for _ in ranked]
+        expanded = await asyncio.gather(
+            *(
+                _streams_from_capture(capture, capture_notes)
+                for capture, capture_notes in zip(ranked, per_capture)
+            )
+        )
+        for capture_notes, capture_streams in zip(per_capture, expanded):
+            notes.extend(capture_notes)
+            streams.extend(capture_streams)
 
         streams = _drop_covered_variants(streams)
 

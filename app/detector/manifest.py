@@ -5,6 +5,8 @@ read it so the UI can offer "1080p / 720p / 480p" instead of one opaque link.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -44,14 +46,45 @@ class ManifestInfo:
     error: str | None = None
 
 
+#: One client for every manifest fetch. A page's master playlist and its variant
+#: playlists all live on the same CDN host, so reusing the pool turns a TLS
+#: handshake per manifest into one handshake per scan.
+_client: httpx.AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_client() -> httpx.AsyncClient:
+    global _client
+
+    async with _client_lock:
+        if _client is None or _client.is_closed:
+            _client = httpx.AsyncClient(
+                follow_redirects=True,
+                # A manifest that has not connected in 8s is not going to.
+                timeout=httpx.Timeout(20.0, connect=8.0),
+                verify=False,
+                limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+            )
+        return _client
+
+
+async def aclose() -> None:
+    """Drop the shared client. Called when the app shuts down."""
+    global _client
+
+    async with _client_lock:
+        if _client is not None and not _client.is_closed:
+            with contextlib.suppress(Exception):
+                await _client.aclose()
+        _client = None
+
+
 async def fetch_text(url: str, headers: dict[str, str], limit: int = 4_000_000) -> str:
     request_headers = {"User-Agent": settings.user_agent, **headers}
-    async with httpx.AsyncClient(
-        follow_redirects=True, timeout=20.0, verify=False
-    ) as client:
-        resp = await client.get(url, headers=request_headers)
-        resp.raise_for_status()
-        return resp.text[:limit]
+    client = await _get_client()
+    resp = await client.get(url, headers=request_headers)
+    resp.raise_for_status()
+    return resp.text[:limit]
 
 
 def _parse_attrs(line: str) -> dict[str, str]:

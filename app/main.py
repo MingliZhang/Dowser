@@ -29,10 +29,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await queue.stop()
-        # Release the shared Chromium, if detection ever started one.
-        from .detector import sniffer
+        # Release the shared Chromium and HTTP pool, if detection started them.
+        from .detector import manifest, sniffer
 
         await sniffer.shutdown()
+        await manifest.aclose()
 
 
 app = FastAPI(title="Dowser", lifespan=lifespan)

@@ -13,6 +13,9 @@ from urllib.parse import parse_qsl, urlparse
 
 from ..models import StreamKind
 
+#: Media files below this are almost always tracking pixels or ad bumpers.
+MIN_FILE_BYTES = 100_000
+
 # --- content types -----------------------------------------------------------
 
 HLS_TYPES = {
