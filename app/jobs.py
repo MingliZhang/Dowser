@@ -86,6 +86,9 @@ class QueueManager:
         self._limiter: DynamicLimiter | None = None
         #: Jobs the watchdog killed, so _process can tell them from user cancels.
         self._stalled: set[str] = set()
+        #: Set during shutdown so an interrupted download is not mistaken for
+        #: one somebody cancelled on purpose.
+        self._shutting_down = False
         self._last_save = 0.0
 
     # --- lifecycle -----------------------------------------------------------
@@ -99,14 +102,37 @@ class QueueManager:
         self._watchdog = asyncio.create_task(self._watch_loop())
 
     async def stop(self) -> None:
+        self._shutting_down = True
+
+        # Kill the media children first. The tasks below are blocked reading
+        # pipes from ffmpeg/yt-dlp, and cancelling a task does not stop the
+        # process on the other end — so without this, shutdown waits on output
+        # that is never coming and systemd eventually SIGKILLs the service.
+        children = list(downloader.job_process.values())
+        for process in children:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                process.kill()
+        # Reap them too. A killed-but-unwaited child stays a zombie that
+        # asyncio's watcher keeps a callback for, which stops the event loop
+        # from ever closing.
+        for process in children:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=3)
+
         for task in [*self._workers, *self._tasks.values()]:
             task.cancel()
         for task in (self._flusher, self._watchdog):
             if task:
                 task.cancel()
-        await asyncio.gather(
-            *self._workers, *self._tasks.values(), return_exceptions=True
-        )
+        # Still bounded, as a backstop: nothing may keep the service from
+        # shutting down, since systemd would SIGKILL us at TimeoutStopSec.
+        with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *self._workers, *self._tasks.values(), return_exceptions=True
+                ),
+                timeout=10,
+            )
         self._save()
 
     def apply_settings(self) -> None:
@@ -365,6 +391,16 @@ class QueueManager:
                 # Keep the countdown in the UI ticking.
                 self._notify()
 
+    def _mark_interrupted(self, job: Job) -> None:
+        """Shutting down mid-download: fail the job but queue it to resume."""
+        job.status = JobStatus.ERROR
+        job.message = "Interrupted by a restart"
+        # Restarts are not the job's fault, so they do not consume a retry
+        # attempt, and the wait is short because the server is coming straight
+        # back up rather than recovering from a broken stream.
+        if runtime.auto_retry:
+            job.retry_at = time.time() + 5
+
     def _schedule_retry(self, job: Job) -> None:
         """Arm an automatic retry, unless we are out of attempts."""
         if not runtime.auto_retry or runtime.max_retries <= 0:
@@ -395,10 +431,17 @@ class QueueManager:
                     await task
                 except asyncio.CancelledError:
                     if job.status == JobStatus.RUNNING:
-                        job.status = JobStatus.CANCELLED
-                        job.message = "Cancelled"
+                        if self._shutting_down:
+                            self._mark_interrupted(job)
+                        else:
+                            job.status = JobStatus.CANCELLED
+                            job.message = "Cancelled"
                         job.finished_at = time.time()
                         self._notify()
+                    # Swallowing our own shutdown would leave this worker
+                    # looping forever and hang the whole process.
+                    if self._shutting_down:
+                        raise
                 finally:
                     self._tasks.pop(job.id, None)
             finally:
@@ -447,10 +490,19 @@ class QueueManager:
                 job.message = f"Stalled — no progress for {runtime.stall_timeout}s"
                 self._schedule_retry(job)
                 return
+            if self._shutting_down:
+                # A restart, not a decision. Arm it to resume on the way back up.
+                self._mark_interrupted(job)
+                return
             job.status = JobStatus.CANCELLED
             job.message = "Cancelled"
             raise
         except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
+            if self._shutting_down:
+                # We killed its ffmpeg on the way out, so the "failure" it is
+                # reporting is our own doing, not a problem with the stream.
+                self._mark_interrupted(job)
+                return
             job.status = JobStatus.ERROR
             job.message = str(exc)[:400] or exc.__class__.__name__
             self._schedule_retry(job)
@@ -500,10 +552,10 @@ class QueueManager:
                 job = Job.model_validate(raw)
                 # Anything mid-flight when we shut down never finished. Arm a
                 # retry so an unattended server picks it back up on its own.
+                # Still marked in-flight means we were killed outright rather
+                # than shut down cleanly. Same treatment either way.
                 if job.status in {JobStatus.RUNNING, JobStatus.QUEUED}:
-                    job.status = JobStatus.ERROR
-                    job.message = "Interrupted by a restart"
-                    job.retry_at = time.time() + 5 if runtime.auto_retry else None
+                    self._mark_interrupted(job)
                 self.jobs[job.id] = job
         for entry in payload.get("detections", []):
             if url := entry.get("url"):

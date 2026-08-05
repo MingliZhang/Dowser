@@ -111,7 +111,9 @@ function render(state) {
 /* ---------------------------------------------------------------- settings */
 
 let settingsBuilt = false;
-const settingsTimers = new Map();
+/** Edits made but not yet saved: key -> value. Also shields those fields from
+ *  being overwritten by the state broadcasts arriving 4x a second. */
+const pendingSettings = new Map();
 
 /**
  * The form is generated from the server's schema, so a new setting appears here
@@ -149,64 +151,94 @@ function renderSettings(schema, values) {
       </div>`).join('');
 
     $('#settings-form').querySelectorAll('[data-key]').forEach((input) => {
-      if (input.classList.contains('path-input')) {
-        // Saving a folder on every keystroke would create directories for each
-        // half-typed prefix, so only commit on blur or Enter.
-        input.addEventListener('change', () => scheduleSave(input, 0));
-        input.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') input.blur();
-        });
-        return;
-      }
       const event = input.type === 'checkbox' ? 'change' : 'input';
-      input.addEventListener(event, () => scheduleSave(input));
+      input.addEventListener(event, () => noteChange(input));
+      input.addEventListener('keydown', (keyEvent) => {
+        if (keyEvent.key === 'Enter') $('#save-settings').click();
+      });
     });
     settingsBuilt = true;
   }
 
-  // Never overwrite the field someone is currently editing.
+  // Leave edited fields alone; everything else follows the server.
   $('#settings-form').querySelectorAll('[data-key]').forEach((input) => {
-    if (input === document.activeElement) return;
-    const value = values[input.dataset.key];
+    const key = input.dataset.key;
+    if (pendingSettings.has(key) || input === document.activeElement) return;
+    const value = values[key];
     if (value === undefined) return;
     if (input.type === 'checkbox') input.checked = Boolean(value);
     else if (input.value !== String(value)) input.value = value;
   });
 }
 
-function scheduleSave(input, delay = 400) {
+function readInput(input) {
+  if (input.type === 'checkbox') return input.checked;
+  if (input.type === 'number') return Number(input.value);
+  return input.value.trim();
+}
+
+function noteChange(input) {
   const key = input.dataset.key;
-  clearTimeout(settingsTimers.get(key));
-  settingsTimers.set(key, setTimeout(async () => {
-    const value = input.type === 'checkbox' ? input.checked
-      : input.classList.contains('path-input') ? input.value.trim()
-      : Number(input.value);
-    if (input.type === 'number' && !Number.isFinite(value)) return;
-    try {
-      const result = await api('/api/settings', {
-        method: 'PATCH',
-        body: JSON.stringify({ [key]: value }),
-      });
-      // The server clamps out-of-range values; show what it actually stored.
-      const stored = result.values?.[key];
-      if (stored !== undefined && input !== document.activeElement) {
-        if (input.type === 'checkbox') input.checked = Boolean(stored);
-        else input.value = stored;
-      }
-      flashSaved();
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }, 400));
+  const saved = serverSettings.values?.[key];
+  const value = readInput(input);
+  // Typing a value back to what it already was is not a change.
+  if (String(value) === String(saved)) pendingSettings.delete(key);
+  else pendingSettings.set(key, value);
+  refreshSettingsButtons();
+}
+
+function refreshSettingsButtons() {
+  const dirty = pendingSettings.size > 0;
+  $('#save-settings').disabled = !dirty;
+  $('#discard-settings').disabled = !dirty;
+  $('#save-settings').textContent = dirty
+    ? `Save ${pendingSettings.size} change${pendingSettings.size > 1 ? 's' : ''}`
+    : 'Save settings';
+}
+
+async function saveSettings() {
+  if (!pendingSettings.size) return;
+  const payload = Object.fromEntries(pendingSettings);
+  const count = Object.keys(payload).length;
+  $('#save-settings').disabled = true;
+
+  try {
+    const result = await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+    // The server clamps and normalises (out-of-range numbers, resolved paths),
+    // so redraw from what it actually stored rather than what was typed.
+    pendingSettings.clear();
+    serverSettings.values = result.values;
+    $('#settings-form').querySelectorAll('[data-key]').forEach((input) => {
+      const stored = result.values?.[input.dataset.key];
+      if (stored === undefined) return;
+      if (input.type === 'checkbox') input.checked = Boolean(stored);
+      else input.value = stored;
+    });
+    flashSaved(`Saved ${count} setting${count > 1 ? 's' : ''}`);
+  } catch (error) {
+    // Nothing was stored, so hold on to the edits for another attempt.
+    toast(error.message, true);
+  } finally {
+    refreshSettingsButtons();
+  }
+}
+
+function discardSettings() {
+  pendingSettings.clear();
+  renderSettings(serverSettings.schema, serverSettings.values);
+  refreshSettingsButtons();
 }
 
 let savedTimer;
-function flashSaved() {
+function flashSaved(message = 'Saved') {
   const el = $('#settings-saved');
-  el.textContent = 'Saved';
+  el.textContent = message;
   el.classList.add('show');
   clearTimeout(savedTimer);
-  savedTimer = setTimeout(() => el.classList.remove('show'), 1400);
+  savedTimer = setTimeout(() => el.classList.remove('show'), 2200);
 }
 
 function renderCapabilities(settings) {
@@ -525,14 +557,28 @@ $('#urls').addEventListener('keydown', (event) => {
 $('#clear-finished').addEventListener('click', () =>
   api('/api/queue/clear', { method: 'POST' }).catch((e) => toast(e.message, true)));
 
+$('#save-settings').addEventListener('click', saveSettings);
+$('#discard-settings').addEventListener('click', discardSettings);
+
 $('#reset-settings').addEventListener('click', async () => {
+  if (!confirm('Reset every setting to its default?')) return;
   try {
     const result = await api('/api/settings/reset', { method: 'POST' });
+    pendingSettings.clear();
+    serverSettings.values = result.values;
     renderSettings(result.schema, result.values);
-    flashSaved();
+    refreshSettingsButtons();
+    flashSaved('Reset to defaults');
   } catch (error) {
     toast(error.message, true);
   }
+});
+
+// Losing typed-but-unsaved settings to a stray tab close is a bad surprise.
+window.addEventListener('beforeunload', (event) => {
+  if (!pendingSettings.size) return;
+  event.preventDefault();
+  event.returnValue = '';
 });
 
 $('#clear-detections').addEventListener('click', async () => {
