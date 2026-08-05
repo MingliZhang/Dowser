@@ -193,7 +193,7 @@ Then:
 On first run this creates a virtualenv, installs the dependencies, and downloads
 Chromium for Playwright (~150 MB). Every later run starts immediately.
 
-Open **http://127.0.0.1:8081**.
+Open **http://127.0.0.1:8477**.
 
 <details>
 <summary>Manual setup, if you prefer</summary>
@@ -209,7 +209,7 @@ python3 -m venv .venv
 ### Docker
 
 ```bash
-docker compose up -d      # → http://localhost:8081, videos in ./downloads
+docker compose up -d      # → http://localhost:8477, videos in ./downloads
 ```
 
 The image is based on Playwright's, so Chromium and its system libraries are
@@ -287,7 +287,7 @@ the panel (or delete `settings.json`) to go back to it.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `8081` | HTTP port |
+| `PORT` | `8477` | HTTP port |
 | `HOST` | `127.0.0.1` | Bind address (Docker sets `0.0.0.0`) |
 | `DOWNLOAD_DIR` | `./downloads` | Where finished videos land |
 | `STATE_FILE` / `SETTINGS_FILE` | `./state.json`, `./settings.json` | Persistence |
@@ -347,8 +347,10 @@ whether ffmpeg and the sniffer are usable.
 
 Give each app its own port and its own folder. Two things to keep in mind:
 
-- **Different ports.** MeTube's default is 8081, which is also Dowser's. Change
-  one of them (`PORT=8082`).
+- **Ports.** Dowser defaults to **8477**, chosen to stay clear of MeTube (8081)
+  and the usual self-hosted crowd — Jellyfin 8096, Sonarr 8989, Radarr 7878,
+  Home Assistant 8123. Override with `PORT` if it still clashes; check first
+  with `ss -tlnp | grep 8477`.
 - **Different download folders**, or at least a Subfolder. Both name files after
   a title, so a shared folder invites collisions. Dowser never overwrites — it
   adds ` (2)` — but separate folders are cleaner.

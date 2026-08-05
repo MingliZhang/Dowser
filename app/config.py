@@ -29,7 +29,7 @@ def _env_path(name: str, default: str) -> Path:
 class Settings:
     #: Local-only by default; the Docker image overrides this to 0.0.0.0.
     host: str = field(default_factory=lambda: os.getenv("HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: _env_int("PORT", 8081))
+    port: int = field(default_factory=lambda: _env_int("PORT", 8477))
 
     #: Where finished videos land.
     download_dir: Path = field(default_factory=lambda: _env_path("DOWNLOAD_DIR", "./downloads"))

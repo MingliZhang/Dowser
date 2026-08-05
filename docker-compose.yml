@@ -3,7 +3,7 @@ services:
     build: .
     container_name: dowser
     ports:
-      - "8081:8081"
+      - "8477:8477"
     volumes:
       # Point the first path at wherever you want your videos.
       - ./downloads:/downloads
