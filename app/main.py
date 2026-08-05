@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -50,9 +50,24 @@ class RevealRequest(BaseModel):
     path: str
 
 
+def _asset_version() -> str:
+    """A token that changes whenever the CSS or JS does."""
+    stamps = [p.stat().st_mtime for p in STATIC_DIR.glob("*") if p.is_file()]
+    return str(int(max(stamps, default=0)))
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    """Serve the page with versioned asset links.
+
+    Browsers cache /static aggressively (304s in the access log). After an
+    update that would leave a fresh page running last week's JavaScript, which
+    fails in ways nobody can diagnose — the markup has features the script has
+    never heard of. Stamping the URLs makes a changed file a different URL.
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("__ASSET_VERSION__", _asset_version())
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/api/state")

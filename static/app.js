@@ -255,9 +255,18 @@ function renderCapabilities(settings) {
   $('#capabilities').innerHTML = pills.join('');
 }
 
-function renderDetections(detections) {
+function renderDetections(allDetections) {
   const panel = $('#detections-panel');
   const container = $('#detections');
+
+  // Forget suppressions once the server agrees the card is gone, so a page
+  // detected again later still shows up.
+  const live = new Set(allDetections.map((d) => d.url));
+  justQueued.forEach((url) => { if (!live.has(url)) justQueued.delete(url); });
+
+  // Anything already sent to the queue must not flicker back into view while
+  // the server-side removal is still in flight.
+  const detections = allDetections.filter((d) => !justQueued.has(d.url));
   lastDetections = detections;
   panel.hidden = detections.length === 0;
 
@@ -406,10 +415,14 @@ function wireCard(card, detection, state) {
   });
 }
 
+/** Cards taken off screen whose removal the server has not caught up with. */
+const justQueued = new Set();
+
 /** Drop a card from the screen immediately, whatever the server says next. */
 function removeCard(url) {
   local.delete(url);
   cardKeys.delete(url);
+  justQueued.add(url);
   const node = $('#detections').querySelector(`[data-url="${CSS.escape(url)}"]`);
   if (node) node.remove();
 }
