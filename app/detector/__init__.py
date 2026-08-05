@@ -8,7 +8,7 @@ from ..config import settings
 from ..models import DetectResult, Stream
 from . import manifest as manifest_mod
 from . import ytdlp_probe
-from .classify import Captured, classify, guess_container
+from .classify import Captured, classify, container_for, guess_container
 from .sniffer import sniff
 
 #: Media files below this are almost always tracking pixels or ad bumpers.
@@ -121,6 +121,28 @@ async def _streams_from_capture(capture: Captured, notes: list[str]) -> list[Str
             )
         ]
 
+    if capture.kind == "live":
+        return [
+            Stream(
+                url=capture.url,
+                kind="live",
+                engine="ffmpeg",
+                label=f"Live stream ({urlparse(capture.url).scheme.upper()})",
+                container="mkv",
+                headers=capture.headers,
+                is_live=True,
+            )
+        ]
+
+    if capture.kind == "hds":
+        # Detected rather than offered: ffmpeg has no F4M demuxer, so a job
+        # would only fail. Saying so beats a silent "no video found".
+        notes.append(
+            "Found an Adobe HDS manifest (.f4m). ffmpeg cannot download HDS, so "
+            "it is not offered — look for an HLS or DASH version of the same stream."
+        )
+        return []
+
     if capture.kind == "subtitle":
         return [
             Stream(
@@ -168,7 +190,7 @@ async def _expand_manifest(capture: Captured, notes: list[str]) -> list[Stream]:
                 kind=capture.kind,
                 engine="ffmpeg",
                 label=f"{label_base} stream",
-                container="mp4",
+                container=container_for(None, info.is_live),
                 headers=capture.headers,
                 duration=info.duration,
                 is_live=info.is_live,
@@ -182,7 +204,7 @@ async def _expand_manifest(capture: Captured, notes: list[str]) -> list[Stream]:
                 kind=capture.kind,
                 engine="ffmpeg",
                 label=f"{label_base} stream" + (" (live)" if info.is_live else ""),
-                container="mp4",
+                container=container_for(None, info.is_live),
                 headers=capture.headers,
                 duration=info.duration,
                 is_live=info.is_live,
@@ -204,7 +226,7 @@ async def _expand_manifest(capture: Captured, notes: list[str]) -> list[Stream]:
                 kind=capture.kind,
                 engine="ffmpeg",
                 label=_variant_label(variant, label_base, info.is_live),
-                container="mp4",
+                container=container_for(variant.codecs, info.is_live),
                 width=variant.width,
                 height=variant.height,
                 fps=variant.fps,
@@ -226,7 +248,7 @@ async def _expand_manifest(capture: Captured, notes: list[str]) -> list[Stream]:
                 kind=capture.kind,
                 engine="ffmpeg",
                 label=f"{label_base} stream",
-                container="mp4",
+                container=container_for(None, info.is_live),
                 headers=capture.headers,
                 duration=info.duration,
                 is_live=info.is_live,

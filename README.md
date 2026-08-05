@@ -87,6 +87,67 @@ HLS variant playlists are frequently video-only, with audio in a separate
 rendition. When that is the case the audio playlist is passed to `ffmpeg` as a
 second input and muxed in, so you do not end up with a silent file.
 
+---
+
+## Supported formats
+
+Detection leads with **content-type**, falling back to the file extension, so a
+stream served from an extensionless URL is still recognised. Anything reported
+as `video/*` or `audio/*` is picked up even if its container is not in the list
+below — the extensions matter only when the server sends a useless content-type.
+
+**Streaming formats**
+
+| | |
+|---|---|
+| HLS | `.m3u8`, `.m3u` — master playlists expanded into qualities |
+| DASH | `.mpd` — representations expanded into qualities |
+| Smooth Streaming | `.ism`, `.isml`, `/Manifest` |
+| Adobe HDS | `.f4m` — *detected and reported, but not downloadable* (ffmpeg has no F4M demuxer) |
+
+**Streaming protocols** — paste these directly; a browser never requests them,
+so they cannot be discovered by scanning a page:
+
+`rtsp://` · `rtsps://` · `rtmp://` · `rtmps://` · `rtmpe://` · `rtmpt://` ·
+`mms://` · `mmsh://` · `mmst://` · `srt://` · `rtp://` · `udp://`
+
+**Video containers**
+
+`mp4` `m4v` `mov` `qt` `webm` `mkv` `avi` `flv` `f4v` `wmv` `asf` `3gp` `3g2`
+`ogv` `ogm` `mpg` `mpeg` `m1v` `m2v` `mpv` `m2p` `vob` `ts` `mts` `m2ts` `mxf`
+`gxf` `lxf` `dv` `divx` `amv` `nsv` `rm` `rmvb` — plus raw elementary streams
+`h264` `h265` `hevc` `av1` `ivf` `y4m` `mjpeg` `vc1`
+
+**Audio**
+
+`m4a` `m4b` `mp3` `mp2` `aac` `ogg` `oga` `opus` `spx` `wav` `flac` `weba`
+`mka` `wma` `ac3` `eac3` `dts` `amr` `ape` `wv` `tta` `caf` `aiff` `au` `ra`
+`mpc` `3ga` `f4a`
+
+**Subtitles**
+
+`vtt` `srt` `ass` `ssa` `ttml` `dfxp` `sub` `sbv` `smi` `sami` `stl` `scc` `lrc`
+
+### What you get out
+
+Streams are remuxed, never re-encoded, so quality is untouched and a download
+runs at network speed rather than CPU speed. The output container is chosen to
+fit the codecs rather than being forced to MP4:
+
+| Source codecs | Output |
+|---|---|
+| H.264/H.265 + AAC (the common case) | `.mp4` |
+| VP8/VP9/AV1 + Opus/Vorbis | `.webm` |
+| A mix WebM cannot hold, e.g. H.264 + Opus | `.mkv` |
+| Anything live | `.mkv` — survives being cut off mid-recording, unlike an unfinalised MP4 |
+
+Plain files are downloaded byte-for-byte over HTTP and keep their original
+extension — no remuxing at all.
+
+**Deliberately excluded:** `.gif` and other image formats. Technically ffmpeg
+handles animated GIFs, but every page has decorative ones and they would bury
+the real results.
+
 ### Recovery: stalls and retries
 
 Downloads do not only fail loudly. A CDN can accept the connection, send a few
@@ -311,7 +372,11 @@ Worth knowing before you file a bug:
   the common cases, not all of them. "Detect again" often helps, since the
   second load is warm.
 - **Live streams** download until you cancel them; there is no known duration, so
-  progress shows elapsed time instead of a percentage.
+  progress shows elapsed time instead of a percentage. They are written to `.mkv`
+  so the file stays playable however you stop it.
+- **Adobe HDS (`.f4m`)** is detected and named in the notes, but ffmpeg cannot
+  demux it, so it is not offered for download. Sites still serving HDS almost
+  always serve HLS alongside it.
 
 Please only download material you have the rights to.
 

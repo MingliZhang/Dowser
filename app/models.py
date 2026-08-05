@@ -8,7 +8,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-StreamKind = Literal["hls", "dash", "smooth", "file", "subtitle", "unknown"]
+StreamKind = Literal[
+    "hls", "dash", "smooth", "hds", "live", "file", "subtitle", "unknown"
+]
 Engine = Literal["ffmpeg", "ytdlp"]
 
 

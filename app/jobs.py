@@ -157,7 +157,9 @@ class QueueManager:
             url = raw.strip()
             if not url:
                 continue
-            if not url.startswith(("http://", "https://")):
+            # Only bare hostnames get a scheme bolted on — rtsp:// and friends
+            # must survive untouched.
+            if "://" not in url:
                 url = f"https://{url}"
             self.detections[url] = {
                 "url": url,

@@ -124,9 +124,17 @@ def _input_args(url: str, headers: dict[str, str]) -> list[str]:
     args = ["-user_agent", user_agent]
     if header_blob := "".join(f"{k}: {v}\r\n" for k, v in clean.items()):
         args += ["-headers", header_blob]
-    args += FFMPEG_NET_OPTS
-    args += ["-protocol_whitelist", "file,http,https,tcp,tls,crypto,data"]
-    if url.lower().split("?")[0].endswith(".m3u8"):
+    low = url.lower()
+    if low.startswith(("rtsp://", "rtsps://", "rtspu://")):
+        # UDP rarely survives a home NAT; TCP is the reliable default here.
+        args += ["-rtsp_transport", "tcp"]
+    else:
+        args += FFMPEG_NET_OPTS
+    args += [
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto,data,rtmp,rtmps,rtsp,rtp,udp,srt,mmsh,mmst",
+    ]
+    if low.split("?")[0].endswith(".m3u8"):
         args += ["-allowed_extensions", "ALL"]
     return args + ["-i", url]
 
@@ -146,8 +154,11 @@ def _build_ffmpeg_command(stream: Stream, output: Path) -> list[str]:
 
     cmd += ["-c", "copy"]
     if stream.container == "mp4":
-        # MPEG-TS audio needs its bitstream rewritten to live inside MP4.
-        cmd += ["-bsf:a", "aac_adtstoasc", "-movflags", "+faststart"]
+        # No explicit -bsf:a here on purpose. ffmpeg inserts aac_adtstoasc
+        # itself when MPEG-TS audio needs rewriting for MP4, whereas forcing it
+        # makes the whole download fail on any stream whose audio is not AAC
+        # (Opus and Vorbis are rejected outright).
+        cmd += ["-movflags", "+faststart"]
     cmd += ["-progress", "pipe:1", "-nostats", str(output)]
     return cmd
 
