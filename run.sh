@@ -12,13 +12,44 @@ PY="$VENV/bin/python"
 
 # --- virtualenv -------------------------------------------------------------
 
+# A venv is only useful to us if it has pip. Debian and Ubuntu ship `venv`
+# without `ensurepip` unless python3-venv is installed, which leaves behind an
+# environment that looks fine but cannot install anything.
+venv_usable() {
+  [ -x "$PY" ] && "$PY" -m pip --version >/dev/null 2>&1
+}
+
+apt_hint() {
+  echo "       On Debian/Ubuntu: sudo apt install python3-venv python3-pip" >&2
+  echo "       (some systems name it for the version, e.g. python3.11-venv)" >&2
+}
+
 if [ ! -x "$PY" ]; then
   echo "==> Creating virtualenv"
   if ! python3 -m venv "$VENV"; then
     echo "ERROR: could not create a virtualenv." >&2
-    echo "       On Debian/Ubuntu: sudo apt install python3-venv python3-pip" >&2
+    apt_hint
     exit 1
   fi
+fi
+
+if ! venv_usable; then
+  echo "==> Virtualenv has no pip; repairing"
+  "$PY" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
+if ! venv_usable; then
+  # --clear empties and rebuilds the environment in place. Nothing but
+  # installed packages lives there, and they are about to be reinstalled.
+  echo "==> Rebuilding the virtualenv from scratch"
+  python3 -m venv --clear "$VENV" || true
+fi
+
+if ! venv_usable; then
+  echo "ERROR: the virtualenv still has no pip, so nothing can be installed." >&2
+  apt_hint
+  echo "       Then delete .venv and run this script again." >&2
+  exit 1
 fi
 
 # --- python dependencies ----------------------------------------------------
