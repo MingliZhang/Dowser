@@ -27,8 +27,10 @@ def _env_path(name: str, default: str) -> Path:
 
 @dataclass
 class Settings:
-    #: Local-only by default; the Docker image overrides this to 0.0.0.0.
-    host: str = field(default_factory=lambda: os.getenv("HOST", "127.0.0.1"))
+    #: Every interface by default — this is meant to run on a home server and be
+    #: reached from other machines. Set HOST=127.0.0.1 to keep it local-only.
+    #: Note there is no authentication, so do not expose this to the internet.
+    host: str = field(default_factory=lambda: os.getenv("HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: _env_int("PORT", 8477))
 
     #: Where finished videos land.

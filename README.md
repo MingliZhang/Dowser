@@ -193,7 +193,13 @@ Then:
 On first run this creates a virtualenv, installs the dependencies, and downloads
 Chromium for Playwright (~150 MB). Every later run starts immediately.
 
-Open **http://127.0.0.1:8477**.
+Open **http://localhost:8477**, or `http://<server-ip>:8477` from another
+machine — startup prints both addresses.
+
+> **No authentication.** Dowser listens on all interfaces so a home server is
+> reachable from your LAN. Keep it there: do not port-forward it or expose it to
+> the internet. If you need it remotely, put it behind a reverse proxy that
+> handles auth, and set `HOST=127.0.0.1` so only the proxy can reach it.
 
 <details>
 <summary>Manual setup, if you prefer</summary>
@@ -288,7 +294,7 @@ the panel (or delete `settings.json`) to go back to it.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8477` | HTTP port |
-| `HOST` | `127.0.0.1` | Bind address (Docker sets `0.0.0.0`) |
+| `HOST` | `0.0.0.0` | Bind address. All interfaces, so your network can reach it — use `127.0.0.1` for local-only |
 | `DOWNLOAD_DIR` | `./downloads` | Where finished videos land |
 | `STATE_FILE` / `SETTINGS_FILE` | `./state.json`, `./settings.json` | Persistence |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | Default for Parallel downloads |
