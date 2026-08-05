@@ -137,6 +137,9 @@ function renderSettings(schema, values) {
             <span class="setting-control">
               ${knob.kind === 'bool'
                 ? `<input type="checkbox" data-key="${esc(knob.key)}" />`
+                : knob.kind === 'path'
+                ? `<input type="text" class="path-input" data-key="${esc(knob.key)}"
+                     spellcheck="false" placeholder="/path/to/folder" />`
                 : `<input type="number" data-key="${esc(knob.key)}"
                      min="${knob.minimum ?? ''}" max="${knob.maximum ?? ''}" step="1" />
                    <span class="setting-unit">${esc(knob.unit || '')}</span>`}
@@ -146,6 +149,15 @@ function renderSettings(schema, values) {
       </div>`).join('');
 
     $('#settings-form').querySelectorAll('[data-key]').forEach((input) => {
+      if (input.classList.contains('path-input')) {
+        // Saving a folder on every keystroke would create directories for each
+        // half-typed prefix, so only commit on blur or Enter.
+        input.addEventListener('change', () => scheduleSave(input, 0));
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') input.blur();
+        });
+        return;
+      }
       const event = input.type === 'checkbox' ? 'change' : 'input';
       input.addEventListener(event, () => scheduleSave(input));
     });
@@ -162,11 +174,13 @@ function renderSettings(schema, values) {
   });
 }
 
-function scheduleSave(input) {
+function scheduleSave(input, delay = 400) {
   const key = input.dataset.key;
   clearTimeout(settingsTimers.get(key));
   settingsTimers.set(key, setTimeout(async () => {
-    const value = input.type === 'checkbox' ? input.checked : Number(input.value);
+    const value = input.type === 'checkbox' ? input.checked
+      : input.classList.contains('path-input') ? input.value.trim()
+      : Number(input.value);
     if (input.type === 'number' && !Number.isFinite(value)) return;
     try {
       const result = await api('/api/settings', {
@@ -201,7 +215,9 @@ function renderCapabilities(settings) {
     ['ffmpeg', settings.ffmpeg],
   ].map(([label, on]) =>
     `<span class="pill ${on ? 'on' : 'off'}">${esc(label)}: ${on ? 'ready' : 'missing'}</span>`);
-  pills.push(`<span class="pill" title="Where finished files are written">📁 ${esc(settings.download_dir || '')}</span>`);
+  pills.push(
+    `<span class="pill" title="Where finished files are written — change it in Settings">` +
+    `📁 ${esc(settings.download_dir || '')}</span>`);
   $('#capabilities').innerHTML = pills.join('');
 }
 

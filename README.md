@@ -269,6 +269,7 @@ is running. Edits save as you type and persist to `settings.json`.
 
 | Setting | Default | What it does |
 |---|---|---|
+| Download folder | `./downloads` | Where finished videos are written. Created if missing, and rejected with a reason if it is not writable |
 | Parallel downloads | 2 | Applies immediately, even to jobs already queued |
 | Stall timeout | 90s | No progress for this long → killed as stuck. `0` disables |
 | Retry automatically | on | Re-run jobs that fail or stall |
@@ -280,6 +281,12 @@ is running. Edits save as you type and persist to `settings.json`.
 
 Settings marked *· next run* apply to the next detection or download rather
 than to work already in flight.
+
+Changing the **download folder** takes effect for the next job queued. Anything
+already downloading finishes into the folder it started with, since its partial
+file is already sitting there — partials are kept in a `.incomplete` directory
+inside the download folder so the final move is a rename rather than a copy
+across filesystems.
 
 > **Adding a knob later.** The panel builds itself from a schema the server
 > sends, so a new setting is one entry in `SCHEMA` in `app/settings_store.py` —
@@ -317,15 +324,17 @@ children die cleanly instead of leaving partial files behind.
 **Linux home server (systemd)** — the usual choice:
 
 ```bash
-sudo cp deploy/dowser.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dowser
+sudo deploy/install-service.sh
 journalctl -u dowser -f
 ```
 
-Edit `User`, `WorkingDirectory`, and `ReadWritePaths` first. If your download
-folder is outside the project directory it **must** be listed in
-`ReadWritePaths` or the service cannot write to it.
+The installer works out the project path, the service user, and the download
+folder from your actual setup, writes the unit, and starts it. Override the user
+with `sudo DOWSER_USER=someone deploy/install-service.sh`.
+
+`deploy/dowser.service` is the same thing as a hand-editable template. Copying
+it unchanged **fails** — `User=dowser` and `/opt/dowser` are placeholders, and
+systemd reports `status=217/USER` when that user does not exist.
 
 **Inside an existing container, alongside MeTube** — use
 `deploy/supervisord-dowser.conf`. Drop it in the container's supervisor include

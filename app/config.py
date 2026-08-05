@@ -77,7 +77,12 @@ class Settings:
         )
     )
 
+    #: True when TEMP_DIR was set explicitly. If it was not, partials follow the
+    #: download folder around when that is changed from the UI.
+    temp_dir_pinned: bool = field(default=False, init=False)
+
     def __post_init__(self) -> None:
+        self.temp_dir_pinned = self.temp_dir is not None
         self.download_dir.mkdir(parents=True, exist_ok=True)
         if self.temp_dir is None:
             self.temp_dir = self.download_dir / ".incomplete"

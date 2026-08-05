@@ -23,7 +23,7 @@ import httpx
 
 from .config import settings
 from .models import Job, Stream
-from .settings_store import runtime
+from .settings_store import runtime, temp_dir
 
 ProgressFn = Callable[[dict], None]
 
@@ -44,7 +44,7 @@ class DownloadError(RuntimeError):
 async def run(job: Job, on_progress: ProgressFn) -> Path:
     """Download ``job`` into a temp file and return that path."""
     stream = job.stream
-    temp_path = settings.temp_dir / f"{job.id}.{stream.container}"
+    temp_path = temp_dir() / f"{job.id}.{stream.container}"
 
     try:
         if stream.engine == "ytdlp":
@@ -268,7 +268,7 @@ _YTDLP_PROGRESS = re.compile(r"^PROG\|(?P<done>[^|]*)\|(?P<total>[^|]*)\|(?P<spe
 
 async def _run_ytdlp(job: Job, temp_path: Path, on_progress: ProgressFn) -> Path:
     stream = job.stream
-    out_template = str(settings.temp_dir / f"{job.id}.%(ext)s")
+    out_template = str(temp_dir() / f"{job.id}.%(ext)s")
     binary = shutil.which(settings.ytdlp) or shutil.which("yt-dlp")
     cmd = (
         [binary] if binary else ["python3", "-m", "yt_dlp"]
@@ -329,7 +329,7 @@ async def _run_ytdlp(job: Job, temp_path: Path, on_progress: ProgressFn) -> Path
         detail = " ".join(stderr_tail[-4:]).strip() or f"yt-dlp exited with {process.returncode}"
         raise DownloadError(detail[:400])
 
-    produced = sorted(settings.temp_dir.glob(f"{job.id}.*"), key=lambda p: p.stat().st_size)
+    produced = sorted(temp_dir().glob(f"{job.id}.*"), key=lambda p: p.stat().st_size)
     if not produced:
         raise DownloadError("yt-dlp did not produce a file")
     return produced[-1]

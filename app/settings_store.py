@@ -7,13 +7,14 @@ the settings panel renders itself from it, so no frontend change is needed.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from .config import settings
 
-Kind = Literal["int", "bool"]
+Kind = Literal["int", "bool", "path"]
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,17 @@ class Knob:
 
 def _schema() -> tuple[Knob, ...]:
     return (
+        Knob(
+            key="download_dir",
+            label="Download folder",
+            kind="path",
+            default=str(settings.download_dir),
+            group="Storage",
+            help=(
+                "Where finished videos are written. Created if missing. "
+                "Downloads already running finish into the old folder."
+            ),
+        ),
         Knob(
             key="max_concurrent",
             label="Parallel downloads",
@@ -141,6 +153,22 @@ class SettingsStore:
             if isinstance(raw, str):
                 return raw.strip().lower() in {"1", "true", "yes", "on"}
             return bool(raw)
+
+        if knob.kind == "path":
+            text = str(raw or "").strip()
+            if not text:
+                raise ValueError(f"{knob.label} cannot be empty")
+            path = Path(text).expanduser()
+            # Prove it is usable now rather than failing on the first download.
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ValueError(f"Cannot create {path}: {exc.strerror or exc}") from exc
+            if not path.is_dir():
+                raise ValueError(f"{path} is not a folder")
+            if not os.access(path, os.W_OK):
+                raise ValueError(f"{path} is not writable by this user")
+            return str(path.resolve())
         try:
             value = int(raw)
         except (TypeError, ValueError) as exc:
@@ -201,3 +229,24 @@ class SettingsStore:
 
 
 runtime = SettingsStore(settings.settings_file)
+
+
+# --- resolved paths ----------------------------------------------------------
+#
+# Read these instead of settings.download_dir / settings.temp_dir anywhere a
+# download is actually written, so a folder change from the UI takes effect
+# without a restart.
+
+
+def download_dir() -> Path:
+    raw = str(runtime.values.get("download_dir") or "").strip()
+    path = Path(raw).expanduser() if raw else settings.download_dir
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def temp_dir() -> Path:
+    """Partials live beside their destination so the final move never copies."""
+    path = settings.temp_dir if settings.temp_dir_pinned else download_dir() / ".incomplete"
+    path.mkdir(parents=True, exist_ok=True)
+    return path

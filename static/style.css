@@ -281,6 +281,17 @@ details[open] .summary-row::before { transform: rotate(90deg); }
 }
 .setting-control input[type="number"]:focus { outline: none; border-color: var(--accent); }
 .setting-control input[type="checkbox"] { width: 17px; height: 17px; }
+.setting-control .path-input {
+  width: 340px;
+  max-width: 44vw;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 8px 10px;
+}
+.setting-control .path-input:focus { outline: none; border-color: var(--accent); }
 .setting-unit { color: var(--muted); font-size: 12.5px; min-width: 52px; }
 .setting.deferred .setting-label::after {
   content: " · next run";

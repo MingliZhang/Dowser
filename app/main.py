@@ -17,7 +17,7 @@ from . import __version__
 from .config import settings
 from .jobs import queue
 from .models import DownloadRequest
-from .settings_store import runtime
+from .settings_store import download_dir, runtime
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -155,7 +155,7 @@ async def reveal(payload: RevealRequest) -> JSONResponse:
     """Show a finished file in the OS file manager (local convenience only)."""
     target = Path(payload.path).resolve()
     try:
-        target.relative_to(settings.download_dir)
+        target.relative_to(download_dir().resolve())
     except ValueError:
         raise HTTPException(status_code=400, detail="Path is outside the download folder")
     if not target.exists():
@@ -185,8 +185,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         queue.unsubscribe(websocket)
 
 
-# Finished videos, browsable straight from the queue.
-app.mount("/files", StaticFiles(directory=settings.download_dir), name="files")
+@app.get("/files/{relative:path}")
+async def serve_download(relative: str) -> FileResponse:
+    """Serve a finished video.
+
+    A route rather than a StaticFiles mount because the download folder can be
+    changed from the UI, and a mount would stay bound to whatever it was at
+    startup.
+    """
+    root = download_dir().resolve()
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Outside the download folder") from None
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target)
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

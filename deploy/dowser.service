@@ -1,11 +1,17 @@
 # systemd unit for running Dowser 24/7 on a Linux home server.
 #
+# PREFER THE INSTALLER — it fills all of this in from your actual layout:
+#
+#   sudo deploy/install-service.sh
+#
+# What follows is a hand-editable template. Copying it unchanged WILL FAIL:
+# the user and paths below are placeholders, not defaults. Replace every
+# `dowser` user and every `/opt/dowser` path with your own.
+#
 #   sudo cp deploy/dowser.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now dowser
 #   journalctl -u dowser -f          # follow the logs
-#
-# Edit User/Group and the three paths below to match your server.
 
 [Unit]
 Description=Dowser — finds and downloads video streams from any page
@@ -14,6 +20,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# REPLACE: this user must already exist, or systemd fails with status=217/USER.
+# Running as an existing login user (or root) is fine on a home server.
 User=dowser
 Group=dowser
 
@@ -38,14 +46,15 @@ StandardError=journal
 SyslogIdentifier=dowser
 
 # Light hardening. If your download folder lives outside WorkingDirectory, add
-# it to ReadWritePaths or the service will not be able to write there.
+# it to ReadWritePaths or the service will not be able to write there. The `-`
+# prefix stops systemd refusing to start over a path that does not exist yet.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectControlGroups=true
 ProtectKernelTunables=true
 RestrictSUIDSGID=true
-ReadWritePaths=/opt/dowser /srv/media/downloads
+ReadWritePaths=-/opt/dowser -/srv/media/downloads
 
 [Install]
 WantedBy=multi-user.target

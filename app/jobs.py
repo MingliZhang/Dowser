@@ -12,7 +12,7 @@ from typing import Any
 from . import downloader, naming
 from .config import settings
 from .models import DownloadItem, Job, JobStatus
-from .settings_store import runtime
+from .settings_store import download_dir, runtime
 
 #: Idle workers are cheap; the real limit is enforced by the shared limiter, so
 #: "parallel downloads" can be raised in the UI without a restart.
@@ -285,7 +285,7 @@ class QueueManager:
             "jobs": [job.public() for job in self.jobs.values()],
             "detections": list(self.detections.values()),
             "settings": {
-                "download_dir": str(settings.download_dir),
+                "download_dir": str(download_dir()),
                 "sniffer": settings.playwright_available,
                 "ffmpeg": settings.ffmpeg_available,
                 **runtime.public(),
@@ -462,7 +462,7 @@ class QueueManager:
     def _finalize(self, job: Job, temp_path: Path) -> Path:
         """Move the finished temp file to its finished name in the download dir."""
         relative = Path(job.filename)
-        target_dir = settings.download_dir / relative.parent
+        target_dir = download_dir() / relative.parent
         target_dir.mkdir(parents=True, exist_ok=True)
         extension = temp_path.suffix or f".{job.stream.container}"
         final_path = naming.unique_path(target_dir, relative.name, extension)
