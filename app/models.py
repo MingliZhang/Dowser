@@ -99,6 +99,13 @@ class Job(BaseModel):
     started_at: float | None = None
     finished_at: float | None = None
 
+    #: None until the finished file has been inspected.
+    verified: bool | None = None
+    verify_note: str = ""
+    #: Length ffprobe measured in the finished file, against what was expected.
+    duration_actual: float | None = None
+    duration_expected: float | None = None
+
     #: Last moment this job actually moved — the basis for stall detection.
     last_progress_at: float | None = None
     #: Automatic attempts so far. Reset when a human hits Retry.

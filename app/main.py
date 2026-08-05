@@ -29,6 +29,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await queue.stop()
+        # Release the shared Chromium, if detection ever started one.
+        from .detector import sniffer
+
+        await sniffer.shutdown()
 
 
 app = FastAPI(title="Dowser", lifespan=lifespan)
@@ -38,6 +42,8 @@ class DetectBatch(BaseModel):
     urls: list[str]
     #: Skip the headless browser — extractor only, much faster.
     quick: bool = False
+    #: Travels with the batch, since the input box is cleared on submit.
+    subfolder: str | None = None
 
 
 class RevealRequest(BaseModel):
@@ -97,7 +103,7 @@ async def detect(payload: DetectBatch) -> dict:
     urls = [u for u in payload.urls if u.strip()]
     if not urls:
         raise HTTPException(status_code=400, detail="No URLs given")
-    accepted = queue.start_detection(urls, quick=payload.quick)
+    accepted = queue.start_detection(urls, quick=payload.quick, subfolder=payload.subfolder)
     return {"accepted": accepted}
 
 
@@ -126,6 +132,19 @@ async def retry(job_id: str) -> dict:
     if not queue.retry(job_id):
         raise HTTPException(status_code=409, detail="Job cannot be retried right now")
     return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/redetect")
+async def redetect(job_id: str) -> dict:
+    """Send a job back a stage: scan its page again and drop the failed job."""
+    job = queue.jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.page_url:
+        raise HTTPException(status_code=409, detail="This job has no page to re-scan")
+    queue.start_detection([job.page_url], subfolder=queue._subfolder_of(job))  # noqa: SLF001
+    queue.remove(job_id)
+    return {"ok": True, "url": job.page_url}
 
 
 @app.delete("/api/jobs/{job_id}")

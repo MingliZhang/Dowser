@@ -9,11 +9,121 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import sys
 from dataclasses import dataclass, field
 
 from ..config import settings
 from ..settings_store import runtime
 from .classify import Captured, classify, dedupe_key, is_noise, looks_like_segment
+
+
+def _launch_args() -> list[str]:
+    """Chromium flags that keep it alive and small on a headless server."""
+    args = [
+        "--autoplay-policy=no-user-gesture-required",
+        "--mute-audio",
+        # /dev/shm is 64MB in most containers; Chromium crashes when it fills.
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--metrics-recording-only",
+    ]
+    # Chromium's sandbox cannot be used as root, and refuses to start without
+    # this. Home servers routinely run services as root.
+    if sys.platform.startswith("linux") and hasattr(os, "geteuid") and os.geteuid() == 0:
+        args.append("--no-sandbox")
+    return args
+
+
+#: One browser shared by every scan, with a fresh context per page. Launching a
+#: browser per page meant three full Chromium instances at a time — roughly a
+#: gigabyte of RAM, which is what runs a small server out of memory.
+_playwright = None
+_browser = None
+_browser_headless: bool | None = None
+_browser_lock = asyncio.Lock()
+#: Pages currently open, and when the last one closed.
+_active_pages = 0
+_idle_since: float | None = None
+
+
+async def _get_browser(headless: bool):
+    global _playwright, _browser, _browser_headless, _active_pages, _idle_since
+
+    async with _browser_lock:
+        _active_pages += 1
+        _idle_since = None
+        if _browser is not None and _browser.is_connected() and _browser_headless == headless:
+            return _browser
+
+        # A dead browser, or one running in the wrong mode, gets replaced.
+        if _browser is not None:
+            with contextlib.suppress(Exception):
+                await _browser.close()
+            _browser = None
+
+        if _playwright is None:
+            from playwright.async_api import async_playwright
+
+            _playwright = await async_playwright().start()
+
+        _browser = await _playwright.chromium.launch(headless=headless, args=_launch_args())
+        _browser_headless = headless
+        return _browser
+
+
+async def _release_browser() -> None:
+    """Mark one page finished; the browser closes once nothing is using it."""
+    global _active_pages, _idle_since
+
+    async with _browser_lock:
+        _active_pages = max(0, _active_pages - 1)
+        if _active_pages == 0:
+            _idle_since = asyncio.get_running_loop().time()
+
+
+async def close_if_idle(timeout: int | None = None) -> bool:
+    """Drop the shared browser once it has been unused for a while.
+
+    A parked Chromium holds on to a few hundred megabytes indefinitely, which
+    is worth reclaiming on a small always-on server between batches.
+    """
+    global _playwright, _browser, _browser_headless, _idle_since
+
+    timeout = settings.browser_idle_timeout if timeout is None else timeout
+    if timeout <= 0:
+        return False
+
+    async with _browser_lock:
+        if _browser is None or _active_pages > 0 or _idle_since is None:
+            return False
+        if asyncio.get_running_loop().time() - _idle_since < timeout:
+            return False
+        with contextlib.suppress(Exception):
+            await _browser.close()
+        _browser = _browser_headless = _idle_since = None
+        return True
+
+
+async def shutdown() -> None:
+    """Close the shared browser. Called when the app shuts down."""
+    global _playwright, _browser, _browser_headless
+
+    async with _browser_lock:
+        if _browser is not None:
+            with contextlib.suppress(Exception):
+                await _browser.close()
+        if _playwright is not None:
+            with contextlib.suppress(Exception):
+                await _playwright.stop()
+        _browser = _playwright = _browser_headless = None
 
 #: Clicked (best effort) to get a player to start loading its stream.
 PLAY_SELECTORS = [
@@ -130,19 +240,40 @@ async def sniff(
         except Exception:  # noqa: BLE001 - a bad response must never kill the sniff
             return
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=headless,
-            args=["--autoplay-policy=no-user-gesture-required", "--mute-audio"],
-        )
+    try:
+        browser = await _get_browser(headless)
         context = await browser.new_context(
             user_agent=settings.user_agent,
             ignore_https_errors=True,
             viewport={"width": 1366, "height": 850},
         )
-        page = await context.new_page()
-        context.on("response", record)
+    except Exception as exc:  # noqa: BLE001
+        await _release_browser()
+        result.notes.append(f"Could not start the browser: {_short(exc, 200)}")
+        return result
 
+    if runtime.block_heavy_assets:
+        # Images and fonts are never a stream, and decoded bitmaps are the
+        # single largest thing in a renderer's memory. Blocking them cuts RAM
+        # and page-load time without touching what we are here to observe.
+        async def _skip(route) -> None:
+            with contextlib.suppress(Exception):
+                await route.abort()
+
+        with contextlib.suppress(Exception):
+            await context.route(
+                lambda _url: True,
+                lambda route: (
+                    _skip(route)
+                    if route.request.resource_type in {"image", "font"}
+                    else route.continue_()
+                ),
+            )
+
+    page = await context.new_page()
+    context.on("response", record)
+
+    try:
         try:
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
@@ -163,10 +294,13 @@ async def sniff(
             if late_title := await _read_title(page):
                 result.title = late_title
         finally:
+            # Only the context goes; the browser stays for the next page.
             with contextlib.suppress(Exception):
                 await context.close()
-            with contextlib.suppress(Exception):
-                await browser.close()
+    except Exception as exc:  # noqa: BLE001 - a browser crash is not fatal
+        result.notes.append(f"Browser stopped early: {_short(exc, 200)}")
+    finally:
+        await _release_browser()
 
     result.captures = list(seen.values())
     return result

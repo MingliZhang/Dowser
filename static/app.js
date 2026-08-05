@@ -310,6 +310,8 @@ function buildCard(detection) {
                placeholder="File name (from the page title)" />
         <a class="card-url" href="${esc(detection.url)}" target="_blank" rel="noreferrer">${esc(detection.url)}</a>
       </div>
+      ${detection.subfolder
+        ? `<span class="tag folder" title="Saves into this subfolder">📁 ${esc(detection.subfolder)}</span>` : ''}
       <span class="badge ${detection.status}">${badges[detection.status] || detection.status}</span>
     </div>
     ${streams.length ? `<div class="streams">${streams.map(streamRow).join('')}</div>` : ''}
@@ -382,14 +384,18 @@ function wireCard(card, detection, state) {
         body: JSON.stringify({
           page_url: detection.url,
           title: state.title || detection.title || detection.url,
-          subfolder: $('#subfolder').value.trim() || null,
+          // Captured when this batch was submitted, not read from the box now.
+          subfolder: detection.subfolder || null,
           items: chosen.map((stream) => ({ stream })),
         }),
       });
-      toast(`Queued ${chosen.length} download${chosen.length > 1 ? 's' : ''}`);
+      // Stage 2 -> 3: it is downloading now, so it leaves the detection list.
+      local.delete(detection.url);
+      await api(`/api/detections?url=${encodeURIComponent(detection.url)}`, { method: 'DELETE' })
+        .catch(() => { /* the card is gone from the UI either way */ });
+      toast(`Downloading ${chosen.length} file${chosen.length > 1 ? 's' : ''}`);
     } catch (error) {
       toast(error.message, true);
-    } finally {
       button.disabled = false;
     }
   });
@@ -475,6 +481,8 @@ function paintJob(node, job) {
     bits.push(job.message);
   }
 
+  if (job.status === 'done' && job.verified) bits.push(`✓ ${job.verify_note}`);
+
   const maxRetries = serverSettings.values?.max_retries;
   if (job.retry_count) {
     bits.push(`retry ${job.retry_count}${maxRetries ? ` of ${maxRetries}` : ''}`);
@@ -509,6 +517,8 @@ function paintJob(node, job) {
       ${job.retry_at ? '<button class="tiny cancel">Stop retrying</button>' : ''}
       ${job.status === 'error' || job.status === 'cancelled'
         ? '<button class="tiny retry">Retry now</button>' : ''}
+      ${(job.status === 'error' || job.status === 'cancelled') && job.page_url
+        ? '<button class="tiny redetect" title="Scan the page again and pick a stream">Back to detect</button>' : ''}
       ${job.status !== 'running' ? '<button class="ghost tiny remove">✕</button>' : ''}
     </div>
     <div class="${barClass}"><span style="width:${width}%"></span></div>`;
@@ -522,17 +532,39 @@ function paintJob(node, job) {
   node.querySelector('.reveal')?.addEventListener('click', () =>
     api('/api/reveal', { method: 'POST', body: JSON.stringify({ path: job.output_path }) })
       .catch((e) => toast(e.message, true)));
+  // Stage 3 -> 2: drop the failed job and put its page back up for detection.
+  node.querySelector('.redetect')?.addEventListener('click', async () => {
+    try {
+      await api(`/api/jobs/${job.id}/redetect`, { method: 'POST' });
+      toast('Scanning the page again');
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 }
 
 /* ----------------------------------------------------------------- actions */
 
-async function startDetection(urls) {
+/**
+ * Stage 1 -> 2. The URLs leave the input box and become detection cards, so the
+ * box is emptied on submit; the subfolder travels with the batch because it is
+ * needed later, at the download stage.
+ */
+async function startDetection(urls, { clearInputs = false } = {}) {
   const quick = $('#quick').checked;
+  const subfolder = $('#subfolder').value.trim() || null;
   const button = $('#detect');
   button.disabled = true;
   $('#detect-status').textContent = `Scanning ${urls.length} page${urls.length > 1 ? 's' : ''}…`;
   try {
-    await api('/api/detect', { method: 'POST', body: JSON.stringify({ urls, quick }) });
+    await api('/api/detect', {
+      method: 'POST',
+      body: JSON.stringify({ urls, quick, subfolder }),
+    });
+    if (clearInputs) {
+      $('#urls').value = '';
+      $('#subfolder').value = '';
+    }
     $('#detect-status').textContent = quick
       ? 'Extractor-only scan running.'
       : 'Loading each page in a headless browser and watching its network traffic…';
@@ -547,7 +579,7 @@ async function startDetection(urls) {
 $('#detect').addEventListener('click', () => {
   const urls = $('#urls').value.split('\n').map((line) => line.trim()).filter(Boolean);
   if (!urls.length) return toast('Paste at least one URL', true);
-  startDetection(urls);
+  startDetection(urls, { clearInputs: true });
 });
 
 $('#urls').addEventListener('keydown', (event) => {

@@ -13,6 +13,15 @@ from ..config import settings
 from ..models import Stream
 
 
+class _SilentLogger:
+    """Swallows yt-dlp's output; failures are reported through the return value."""
+
+    def debug(self, message: str) -> None: ...
+    def info(self, message: str) -> None: ...
+    def warning(self, message: str) -> None: ...
+    def error(self, message: str) -> None: ...
+
+
 def _ydl_options() -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
@@ -22,6 +31,9 @@ def _ydl_options() -> dict[str, Any]:
         "socket_timeout": 20,
         "extract_flat": False,
         "user_agent": settings.user_agent,
+        # This runs as a fallback on pages no extractor knows, so its "ERROR:
+        # Unsupported URL" lines are expected and would only spam the journal.
+        "logger": _SilentLogger(),
     }
     if settings.cookies_file:
         opts["cookiefile"] = settings.cookies_file

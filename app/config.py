@@ -52,6 +52,17 @@ class Settings:
     auto_retry: bool = field(default_factory=lambda: _env_bool("AUTO_RETRY", True))
     retry_delay: int = field(default_factory=lambda: _env_int("RETRY_DELAY", 30))
     max_retries: int = field(default_factory=lambda: _env_int("MAX_RETRIES", 3))
+    #: When retries run out, send the page back to the detection stage.
+    refetch_on_failure: bool = field(default_factory=lambda: _env_bool("REFETCH_ON_FAILURE", True))
+
+    #: Probe finished files for truncation and corruption before accepting them.
+    verify_downloads: bool = field(default_factory=lambda: _env_bool("VERIFY_DOWNLOADS", True))
+    #: Percent shorter than advertised a video may be before it counts as short.
+    verify_tolerance: int = field(default_factory=lambda: _env_int("VERIFY_TOLERANCE", 2))
+    #: Also walk every packet. On by default: metadata alone cannot detect a
+    #: truncated file whose header still claims the full duration, and a
+    #: demux-only pass costs milliseconds next to the download itself.
+    verify_deep: bool = field(default_factory=lambda: _env_bool("VERIFY_DEEP", True))
 
     ffmpeg: str = field(default_factory=lambda: os.getenv("FFMPEG_PATH", "ffmpeg"))
     ffprobe: str = field(default_factory=lambda: os.getenv("FFPROBE_PATH", "ffprobe"))
@@ -64,6 +75,14 @@ class Settings:
     sniff_headless: bool = field(default_factory=lambda: _env_bool("SNIFF_HEADLESS", True))
     #: Try clicking play/consent buttons to coax a player into loading its stream.
     sniff_autoplay: bool = field(default_factory=lambda: _env_bool("SNIFF_AUTOPLAY", True))
+    #: Pages scanned at once. Browser pages dominate this app's memory use, so
+    #: this is the first thing to turn down on a small server.
+    detect_concurrency: int = field(default_factory=lambda: _env_int("DETECT_CONCURRENCY", 2))
+    #: Drop images and fonts during a scan; they cannot be streams and they are
+    #: the bulk of a renderer's memory.
+    block_heavy_assets: bool = field(default_factory=lambda: _env_bool("BLOCK_HEAVY_ASSETS", True))
+    #: Close the shared browser after this many idle seconds to release its RAM.
+    browser_idle_timeout: int = field(default_factory=lambda: _env_int("BROWSER_IDLE_TIMEOUT", 180))
 
     #: e.g. "chrome", "firefox", "safari" — lets yt-dlp reuse your logged-in session.
     cookies_from_browser: str = field(default_factory=lambda: os.getenv("COOKIES_FROM_BROWSER", ""))

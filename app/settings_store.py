@@ -99,6 +99,82 @@ def _schema() -> tuple[Knob, ...]:
             help="Give up after this many automatic attempts. Manual retry resets the count.",
         ),
         Knob(
+            key="refetch_on_failure",
+            label="Re-scan the page when retries run out",
+            kind="bool",
+            default=settings.refetch_on_failure,
+            group="Recovery",
+            help=(
+                "Put the page back at the detection stage so you can pick a "
+                "stream again. Stream links are often signed and expire, so a "
+                "fresh scan usually fixes a download that stopped working."
+            ),
+        ),
+        Knob(
+            key="verify_downloads",
+            label="Check finished files",
+            kind="bool",
+            default=settings.verify_downloads,
+            group="Verification",
+            help=(
+                "Probe each finished file: does it parse, does it still have a "
+                "video track, and is it as long as the source claimed. A file "
+                "that fails is deleted and retried rather than kept."
+            ),
+        ),
+        Knob(
+            key="verify_tolerance",
+            label="Allowed shortfall",
+            kind="int",
+            default=settings.verify_tolerance,
+            group="Verification",
+            unit="percent",
+            minimum=0,
+            maximum=50,
+            help=(
+                "How much shorter than advertised a video may be before it "
+                "counts as incomplete. Manifests are often a second or two out."
+            ),
+        ),
+        Knob(
+            key="verify_deep",
+            label="Full-file scan",
+            kind="bool",
+            default=settings.verify_deep,
+            group="Verification",
+            help=(
+                "Also read every packet. Needed to catch a truncated file whose "
+                "header still claims the full length — the length check alone "
+                "cannot see that. Costs well under a second per gigabyte."
+            ),
+        ),
+        Knob(
+            key="detect_concurrency",
+            label="Pages scanned at once",
+            kind="int",
+            default=settings.detect_concurrency,
+            group="Detection",
+            minimum=1,
+            maximum=6,
+            help=(
+                "Browser pages are by far the largest thing in memory here. "
+                "Lower this first if the server runs out of RAM; 1 is safe on a "
+                "container with 2GB or less."
+            ),
+        ),
+        Knob(
+            key="block_heavy_assets",
+            label="Skip images and fonts while scanning",
+            kind="bool",
+            default=settings.block_heavy_assets,
+            group="Detection",
+            help=(
+                "Neither can ever be a video stream, and decoded images are the "
+                "biggest thing in a browser page's memory. Turn off only if a "
+                "site stops revealing its player without them."
+            ),
+        ),
+        Knob(
             key="sniff_timeout",
             label="Page scan time",
             kind="int",

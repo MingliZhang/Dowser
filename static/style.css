@@ -199,6 +199,7 @@ main {
 .tag.dash { color: #d2a8ff; }
 .tag.file { color: #7ee787; }
 .tag.subtitle { color: var(--warn); }
+.tag.folder { text-transform: none; letter-spacing: 0; align-self: center; }
 .stream-grow { flex: 1; min-width: 0; }
 
 .card-foot {

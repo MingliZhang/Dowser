@@ -148,6 +148,33 @@ extension — no remuxing at all.
 handles animated GIFs, but every page has decorative ones and they would bury
 the real results.
 
+### Verifying finished files
+
+A download that ends without an error is not necessarily a whole video. So
+before a file is accepted into the download folder it is inspected, and one that
+fails is **deleted and retried** rather than quietly kept.
+
+| Check | Catches |
+|---|---|
+| Byte count vs `Content-Length` | A body that stopped early |
+| Does ffprobe parse it | A container damaged badly enough to be unreadable |
+| Are the streams present | A file that lost its video track |
+| Measured length vs the source's | A stream that stopped serving partway |
+| Full packet scan | Damage the metadata does not admit to |
+
+That last one earns its place. An MP4 keeps its duration in a header, so a file
+missing 40% of its data can still *report* the full length:
+
+```
+truncated to 60%  → length check:      PASS  "0:30 verified"      ← wrong
+truncated to 60%  → full packet scan:  FAIL  "partial file"       ← correct
+```
+
+The scan is demux-only — it reads the file without decoding it, costing about
+60 ms for a 16 MB file — so it is on by default. **Allowed shortfall** (2%)
+absorbs the second or two that manifests are routinely out by; live captures and
+files of unknown length skip the length comparison and are checked structurally.
+
 ### Recovery: stalls and retries
 
 Downloads do not only fail loudly. A CDN can accept the connection, send a few
@@ -225,11 +252,31 @@ already present; `ffmpeg` is added on top.
 
 ## Using it
 
+Work moves along a pipeline, and a page sits in exactly one stage at a time:
+
+```
+   ┌───────────┐  Detect streams   ┌───────────┐  Download selected  ┌───────────┐
+   │ Page URLs │ ────────────────▶ │ Detected  │ ──────────────────▶ │ Downloads │
+   └───────────┘   input clears    │   pages   │    card disappears  └───────────┘
+                                   └───────────┘                           │
+                                         ▲                                 │
+                                         └─────────────────────────────────┘
+                                          fails → back for a fresh scan
+```
+
+Each step forward needs you to confirm it, and nothing lingers in the stage it
+came from. A download that fails past its retries returns to the detected-pages
+stage automatically, because stream links are often signed and expire — a fresh
+scan is usually what fixes it. It stops there and waits for you rather than
+looping on its own. **Back to detect** on a failed job does the same by hand.
+
 1. **Paste URLs** into the box — one per line. You can queue a whole session's
-   worth of tabs at once.
-2. **Detect streams.** Each page is scanned in the background (3 at a time) and
-   results appear as they land, so you are not waiting on the slowest page.
-3. **Review each card:**
+   worth of tabs at once. Set **Subfolder** to group the batch; it travels with
+   those URLs, so the box can be cleared and reused for the next batch.
+2. **Detect streams.** The input empties immediately — those URLs are now cards.
+   Each page is scanned in the background (3 at a time) and results appear as
+   they land, so you are not waiting on the slowest page.
+3. **Review each card** — it leaves this stage once you start downloading:
    - **VIDEO FOUND** — pick a quality. The best one is pre-selected.
    - **NO VIDEO DETECTED** — the page is kept on screen and marked, with notes
      explaining what happened, so nothing silently disappears from a batch.
@@ -275,6 +322,10 @@ is running. Edits save as you type and persist to `settings.json`.
 | Retry automatically | on | Re-run jobs that fail or stall |
 | Wait before retrying | 30s | Pause before starting a failed download over |
 | Retry attempts | 3 | Give up after this many automatic tries |
+| Re-scan the page when retries run out | on | Move the page back to the detection stage for fresh links |
+| Check finished files | on | Probe each download; failures are deleted and retried |
+| Allowed shortfall | 2% | How much shorter than advertised a video may be |
+| Full-file scan | on | Read every packet — the only way to catch a truncated file that lies about its length |
 | Page scan time | 25s | How long to watch each page's traffic — raise for slow players |
 | Headless browser | on | Turn off to watch the browser work |
 | Click play & consent buttons | on | Dismiss cookie walls and start players |

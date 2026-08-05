@@ -9,10 +9,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import downloader, naming
+from . import downloader, naming, verify
 from .config import settings
 from .models import DownloadItem, Job, JobStatus
-from .settings_store import download_dir, runtime
+from .settings_store import download_dir, runtime, temp_dir
 
 #: Idle workers are cheap; the real limit is enforced by the shared limiter, so
 #: "parallel downloads" can be raised in the UI without a restart.
@@ -81,8 +81,9 @@ class QueueManager:
         self._flusher: asyncio.Task | None = None
         self._watchdog: asyncio.Task | None = None
         self._detect_tasks: set[asyncio.Task] = set()
-        #: Headless browsers are heavy — only a few pages at a time.
-        self._detect_sem = asyncio.Semaphore(3)
+        #: Browser pages are the most memory-hungry thing here, so this is kept
+        #: separate from the download limit and adjustable.
+        self._detect_limiter: DynamicLimiter | None = None
         self._limiter: DynamicLimiter | None = None
         #: Jobs the watchdog killed, so _process can tell them from user cancels.
         self._stalled: set[str] = set()
@@ -95,7 +96,9 @@ class QueueManager:
 
     async def start(self) -> None:
         self._load()
+        self._sweep_orphaned_partials()
         self._limiter = DynamicLimiter(runtime.max_concurrent)
+        self._detect_limiter = DynamicLimiter(runtime.detect_concurrency)
         for _ in range(WORKER_POOL):
             self._workers.append(asyncio.create_task(self._worker()))
         self._flusher = asyncio.create_task(self._flush_loop())
@@ -139,6 +142,8 @@ class QueueManager:
         """Called after the settings change so live knobs take effect at once."""
         if self._limiter:
             self._limiter.set_limit(runtime.max_concurrent)
+        if self._detect_limiter:
+            self._detect_limiter.set_limit(runtime.detect_concurrency)
         self._notify()
 
     # --- public API ----------------------------------------------------------
@@ -176,7 +181,9 @@ class QueueManager:
 
     # --- detection -----------------------------------------------------------
 
-    def start_detection(self, urls: list[str], quick: bool = False) -> list[str]:
+    def start_detection(
+        self, urls: list[str], quick: bool = False, subfolder: str | None = None
+    ) -> list[str]:
         """Queue a detection pass for each URL; results stream over the socket."""
         accepted: list[str] = []
         for raw in urls:
@@ -194,6 +201,9 @@ class QueueManager:
                 "title_source": "",
                 "streams": [],
                 "notes": [],
+                # Carried from the input box, which is cleared on submit, so it
+                # is still known when this card reaches the download stage.
+                "subfolder": (subfolder or "").strip(),
                 "detected_at": time.time(),
             }
             accepted.append(url)
@@ -207,7 +217,9 @@ class QueueManager:
         from . import detector  # imported lazily so startup stays fast
 
         entry = self.detections[url]
-        async with self._detect_sem:
+        assert self._detect_limiter is not None
+        await self._detect_limiter.acquire()
+        try:
             entry["status"] = "running"
             self._notify()
             try:
@@ -231,6 +243,8 @@ class QueueManager:
                 detected_at=time.time(),
             )
             self._notify()
+        finally:
+            self._detect_limiter.release()
 
     def forget_detection(self, url: str) -> bool:
         return self.detections.pop(url, None) is not None
@@ -347,6 +361,24 @@ class QueueManager:
             self._checkpoint()
             await asyncio.sleep(0.25)
 
+    def _sweep_orphaned_partials(self) -> None:
+        """Delete leftover partial files that no job will ever finish.
+
+        A clean failure removes its own partial, but a process that is killed
+        outright — OOM, SIGKILL, power loss — cannot. Those files are otherwise
+        invisible and accumulate until the disk fills.
+        """
+        known = set(self.jobs)
+        freed = 0
+        for leftover in temp_dir().glob("*"):
+            if not leftover.is_file() or leftover.stem in known:
+                continue
+            with contextlib.suppress(OSError):
+                freed += leftover.stat().st_size
+                leftover.unlink()
+        if freed:
+            print(f"  Reclaimed {freed / 1_048_576:.0f} MB of abandoned partial downloads", flush=True)
+
     def _checkpoint(self) -> None:
         """Persist at most once every SAVE_INTERVAL seconds."""
         now = time.monotonic()
@@ -385,6 +417,12 @@ class QueueManager:
                     )
                     changed = True
 
+            # Hand back the browser's memory once scanning has finished.
+            with contextlib.suppress(Exception):
+                from .detector import sniffer
+
+                await sniffer.close_if_idle()
+
             if changed:
                 self._notify()
             elif any(j.retry_at for j in self.jobs.values()):
@@ -402,16 +440,40 @@ class QueueManager:
             job.retry_at = time.time() + 5
 
     def _schedule_retry(self, job: Job) -> None:
-        """Arm an automatic retry, unless we are out of attempts."""
-        if not runtime.auto_retry or runtime.max_retries <= 0:
-            return
-        if job.retry_count >= runtime.max_retries:
+        """Arm an automatic retry; when that is not possible, move a stage back.
+
+        Retrying and re-scanning are independent choices: turning off automatic
+        retries means "do not hammer the same link", not "give up on the page".
+        """
+        if runtime.auto_retry and runtime.max_retries > 0:
+            if job.retry_count < runtime.max_retries:
+                job.retry_at = time.time() + runtime.retry_delay
+                return
             job.message = (
                 f"{job.message} — gave up after {job.retry_count} automatic "
                 f"attempt{'s' if job.retry_count != 1 else ''}"
             )
+        self._send_back_to_detection(job)
+
+    def _send_back_to_detection(self, job: Job) -> None:
+        """Out of retries: put the page back at the detection stage.
+
+        Stream URLs are often signed and expire, so re-scanning the page for
+        fresh links is usually what fixes a download that has stopped working.
+        It stops there and waits: moving on to a download needs a person.
+        """
+        if not runtime.refetch_on_failure or not job.page_url:
             return
-        job.retry_at = time.time() + runtime.retry_delay
+        existing = self.detections.get(job.page_url, {}).get("status")
+        if existing in {"queued", "running"}:
+            return  # already on its way back
+        job.message = f"{job.message}; scanning the page again for fresh links"
+        self.start_detection([job.page_url], subfolder=self._subfolder_of(job))
+
+    @staticmethod
+    def _subfolder_of(job: Job) -> str:
+        parent = Path(job.filename).parent
+        return "" if str(parent) == "." else str(parent)
 
     # --- worker --------------------------------------------------------------
 
@@ -475,6 +537,23 @@ class QueueManager:
 
         try:
             temp_path = await downloader.run(job, on_progress)
+
+            if runtime.verify_downloads:
+                job.message = "Checking the file..."
+                job.speed = job.eta = None
+                self._notify()
+                result = await verify.check(job, temp_path)
+                job.verified = result.ok
+                job.verify_note = result.detail
+                job.duration_actual = result.duration
+                job.duration_expected = result.expected
+                if not result.ok:
+                    # Do not let a bad file reach the download folder; failing
+                    # here puts it through the normal retry path instead.
+                    with contextlib.suppress(OSError):
+                        temp_path.unlink()
+                    raise verify.VerificationError(result.detail)
+
             final_path = self._finalize(job, temp_path)
             job.status = JobStatus.DONE
             job.percent = 100.0
