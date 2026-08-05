@@ -282,7 +282,10 @@ looping on its own. **Back to detect** on a failed job does the same by hand.
      explaining what happened, so nothing silently disappears from a batch.
    - The title field is pre-filled with the tab title and is **editable** — what
      you type is what the file is called.
-4. **Download selected.** Progress, speed, and ETA stream live into the queue.
+4. **Download selected** on one card, or **Download all** to queue every card
+   that has something ticked. Either way the cards leave this stage, and you can
+   keep queueing while other downloads are still running — the queue holds them
+   until a slot frees up. Progress, speed, and ETA stream live into the queue.
    Jobs can be cancelled, retried, and revealed in your file manager.
 
 You can also paste a `.m3u8`, `.mpd`, or `.mp4` URL directly — it skips the

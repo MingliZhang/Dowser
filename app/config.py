@@ -77,7 +77,9 @@ class Settings:
     sniff_autoplay: bool = field(default_factory=lambda: _env_bool("SNIFF_AUTOPLAY", True))
     #: Pages scanned at once. Browser pages dominate this app's memory use, so
     #: this is the first thing to turn down on a small server.
-    detect_concurrency: int = field(default_factory=lambda: _env_int("DETECT_CONCURRENCY", 2))
+    #: One at a time by default: it is the gentlest on memory, and a batch that
+    #: resolves in order is easier to follow than several pages half-finished.
+    detect_concurrency: int = field(default_factory=lambda: _env_int("DETECT_CONCURRENCY", 1))
     #: Drop images and fonts during a scan; they cannot be streams and they are
     #: the bulk of a renderer's memory.
     block_heavy_assets: bool = field(default_factory=lambda: _env_bool("BLOCK_HEAVY_ASSETS", True))

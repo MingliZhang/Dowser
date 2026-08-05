@@ -61,6 +61,8 @@ async function api(path, options = {}) {
 const local = new Map();          // url -> { title, selected:Set<streamId>, touchedTitle:boolean }
 const cardKeys = new Map();       // url -> signature of the last render
 const jobNodes = new Map();       // jobId -> element
+/** Detections from the last snapshot, so batch actions know what is on screen. */
+let lastDetections = [];
 let serverSettings = {};
 /** Server clock from the last snapshot — retry countdowns use it, not ours. */
 let serverNow = Date.now() / 1000;
@@ -256,6 +258,7 @@ function renderCapabilities(settings) {
 function renderDetections(detections) {
   const panel = $('#detections-panel');
   const container = $('#detections');
+  lastDetections = detections;
   panel.hidden = detections.length === 0;
 
   const withVideo = detections.filter((d) => d.status === 'ok').length;
@@ -289,6 +292,8 @@ function renderDetections(detections) {
       node.remove();
     }
   });
+
+  refreshBatchButton();
 }
 
 function buildCard(detection) {
@@ -369,31 +374,20 @@ function wireCard(card, detection, state) {
     box.addEventListener('change', () => {
       if (box.checked) state.selected.add(box.value); else state.selected.delete(box.value);
       updatePreview(card, detection, state);
+      refreshBatchButton();
     });
   });
 
   card.querySelector('.download')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
-    const chosen = (detection.streams || []).filter((s) => state.selected.has(s.id));
-    if (!chosen.length) return toast('Select at least one stream first', true);
-
     button.disabled = true;
     try {
-      await api('/api/download', {
-        method: 'POST',
-        body: JSON.stringify({
-          page_url: detection.url,
-          title: state.title || detection.title || detection.url,
-          // Captured when this batch was submitted, not read from the box now.
-          subfolder: detection.subfolder || null,
-          items: chosen.map((stream) => ({ stream })),
-        }),
-      });
-      // Stage 2 -> 3: it is downloading now, so it leaves the detection list.
-      local.delete(detection.url);
-      await api(`/api/detections?url=${encodeURIComponent(detection.url)}`, { method: 'DELETE' })
-        .catch(() => { /* the card is gone from the UI either way */ });
-      toast(`Downloading ${chosen.length} file${chosen.length > 1 ? 's' : ''}`);
+      const count = await queueDetection(detection);
+      if (!count) {
+        button.disabled = false;
+        return toast('Select at least one stream first', true);
+      }
+      toast(`Downloading ${count} file${count > 1 ? 's' : ''}`);
     } catch (error) {
       toast(error.message, true);
       button.disabled = false;
@@ -410,6 +404,75 @@ function wireCard(card, detection, state) {
     await api(`/api/detections?url=${encodeURIComponent(detection.url)}`, { method: 'DELETE' })
       .catch((error) => toast(error.message, true));
   });
+}
+
+/** Drop a card from the screen immediately, whatever the server says next. */
+function removeCard(url) {
+  local.delete(url);
+  cardKeys.delete(url);
+  const node = $('#detections').querySelector(`[data-url="${CSS.escape(url)}"]`);
+  if (node) node.remove();
+}
+
+/**
+ * Queue one page's selected streams. Returns how many were queued, 0 if
+ * nothing was selected. The card leaves the detection stage on success —
+ * removed from the DOM directly rather than waiting on the server round-trip,
+ * so a failed cleanup call can never strand a card with a dead button.
+ */
+async function queueDetection(detection) {
+  const state = local.get(detection.url);
+  const chosen = (detection.streams || []).filter((s) => state?.selected?.has(s.id));
+  if (!chosen.length) return 0;
+
+  await api('/api/download', {
+    method: 'POST',
+    body: JSON.stringify({
+      page_url: detection.url,
+      title: state.title || detection.title || detection.url,
+      // Captured when this batch was submitted, not read from the box now.
+      subfolder: detection.subfolder || null,
+      items: chosen.map((stream) => ({ stream })),
+    }),
+  });
+
+  removeCard(detection.url);
+  api(`/api/detections?url=${encodeURIComponent(detection.url)}`, { method: 'DELETE' })
+    .catch(() => { /* already gone from the UI; the next snapshot reconciles */ });
+  return chosen.length;
+}
+
+async function downloadAll() {
+  const button = $('#download-all');
+  const ready = lastDetections.filter(
+    (d) => d.status === 'ok' && local.get(d.url)?.selected?.size,
+  );
+  if (!ready.length) return toast('Nothing selected to download', true);
+
+  button.disabled = true;
+  let files = 0;
+  const failed = [];
+  // One at a time: a rejected page should not take the rest of the batch down.
+  for (const detection of ready) {
+    try {
+      files += await queueDetection(detection);
+    } catch (error) {
+      failed.push(error.message);
+    }
+  }
+  if (failed.length) toast(`${failed.length} page(s) failed: ${failed[0]}`, true);
+  else toast(`Queued ${files} file${files > 1 ? 's' : ''} from ${ready.length} page${ready.length > 1 ? 's' : ''}`);
+  refreshBatchButton();
+}
+
+function refreshBatchButton() {
+  const button = $('#download-all');
+  if (!button) return;
+  const ready = lastDetections.filter(
+    (d) => d.status === 'ok' && local.get(d.url)?.selected?.size,
+  ).length;
+  button.disabled = ready === 0;
+  button.textContent = ready ? `Download all (${ready})` : 'Download all';
 }
 
 function updatePreview(card, detection, state) {
@@ -589,6 +652,7 @@ $('#urls').addEventListener('keydown', (event) => {
 $('#clear-finished').addEventListener('click', () =>
   api('/api/queue/clear', { method: 'POST' }).catch((e) => toast(e.message, true)));
 
+$('#download-all').addEventListener('click', downloadAll);
 $('#save-settings').addEventListener('click', saveSettings);
 $('#discard-settings').addEventListener('click', discardSettings);
 

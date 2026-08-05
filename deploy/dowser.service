@@ -45,6 +45,11 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=dowser
 
+# No core dumps. If the OOM killer takes this service, systemd-coredump would
+# otherwise write a snapshot of a multi-gigabyte process to disk — repeatedly,
+# on the very machine that just ran out of room.
+LimitCORE=0
+
 # Light hardening. If your download folder lives outside WorkingDirectory, add
 # it to ReadWritePaths or the service will not be able to write there. The `-`
 # prefix stops systemd refusing to start over a path that does not exist yet.

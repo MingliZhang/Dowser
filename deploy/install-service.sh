@@ -81,6 +81,10 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=dowser
 
+# No core dumps: an OOM kill would otherwise dump a multi-gigabyte process
+# image onto the disk of the machine that just ran out of room.
+LimitCORE=0
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

@@ -369,8 +369,77 @@ details[open] .summary-row::before { transform: rotate(90deg); }
 }
 .toast.bad { border-color: #4d2222; color: #ffa198; }
 
-@media (max-width: 640px) {
-  main { padding: 16px 12px 40px; }
-  .topbar { padding: 14px 14px; }
-  .subfolder input { width: 120px; }
+/* --- phones ---------------------------------------------------------------
+   Touch targets stay at least 40px, inputs stay at 16px (anything smaller
+   makes iOS zoom the page on focus), and every fixed width becomes fluid. */
+
+@media (max-width: 760px) {
+  body { -webkit-text-size-adjust: 100%; }
+
+  main { padding: 14px 12px 48px; gap: 14px; }
+  .panel { padding: 14px; border-radius: 12px; }
+
+  .topbar { padding: 12px 14px; gap: 10px; }
+  .brand { gap: 10px; }
+  .logo { font-size: 22px; }
+  h1 { font-size: 17px; }
+  .tagline { display: none; }
+  .pills { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+  .pill { white-space: nowrap; flex: none; max-width: 62vw; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Inputs: full width, and 16px so focusing does not zoom the viewport. */
+  input[type="text"], textarea, .setting-control input, .path-input {
+    font-size: 16px;
+    width: 100%;
+  }
+  textarea { min-height: 96px; }
+
+  .controls { gap: 10px; }
+  .controls button { flex: 1 1 auto; min-height: 44px; }
+  .spacer { display: none; }
+  .checkbox { flex: 1 1 100%; min-height: 34px; }
+  .subfolder { flex: 1 1 100%; flex-direction: column; align-items: stretch; gap: 5px; }
+  .subfolder input { width: 100%; }
+
+  .panel-head { flex-wrap: wrap; }
+  .panel-actions { width: 100%; justify-content: space-between; }
+  .panel-actions button { min-height: 40px; }
+
+  /* Cards: title, badge and buttons stack rather than squeeze. */
+  .card-head { flex-wrap: wrap; }
+  .card-title { flex: 1 1 100%; order: 2; }
+  .badge { order: 1; }
+  .tag.folder { order: 1; }
+  .card-foot { gap: 8px; }
+  .card-foot button { flex: 1 1 auto; min-height: 42px; }
+  .preview { flex: 1 1 100%; word-break: break-all; }
+
+  /* Stream rows: bigger checkbox, label above the metadata. */
+  .stream { padding: 11px 10px; align-items: flex-start; }
+  .stream input[type="checkbox"] { width: 20px; height: 20px; margin-top: 2px; flex: none; }
+  .stream-label, .stream-meta { display: block; }
+  .stream-meta { margin-top: 2px; }
+  .tag { align-self: center; }
+
+  /* Settings: control drops below its label instead of sharing the row. */
+  .setting { grid-template-columns: 1fr; gap: 6px; }
+  .setting-label { grid-column: 1; grid-row: 1; }
+  .setting-help { grid-column: 1; grid-row: 2; }
+  .setting-control { grid-column: 1; grid-row: 3; justify-self: stretch; }
+  .setting-control input[type="number"] { width: 110px; text-align: left; }
+  .setting-control input[type="checkbox"] { width: 22px; height: 22px; }
+  .settings-foot { flex-wrap: wrap; gap: 8px; }
+  .settings-foot button { flex: 1 1 auto; min-height: 42px; }
+
+  /* Queue rows: name on its own line, actions wrap under it. */
+  .job { grid-template-columns: 1fr; gap: 8px; padding: 12px; }
+  .job-actions { flex-wrap: wrap; }
+  .job-actions button { min-height: 38px; flex: 1 1 auto; }
+  .job-name { font-size: 14px; }
+
+  .toast { left: 12px; right: 12px; transform: none; text-align: center; }
+}
+
+@media (max-width: 380px) {
+  .card-foot button, .job-actions button { flex: 1 1 100%; }
 }
