@@ -18,6 +18,9 @@ User=dowser
 Group=dowser
 
 WorkingDirectory=/opt/dowser
+# Installed as a system service means you want to reach it from other machines,
+# so bind every interface. Drop this line to keep it loopback-only.
+Environment=HOST=0.0.0.0
 EnvironmentFile=-/opt/dowser/.env
 ExecStart=/opt/dowser/.venv/bin/python -m app.main
 

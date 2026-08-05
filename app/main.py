@@ -190,8 +190,51 @@ app.mount("/files", StaticFiles(directory=settings.download_dir), name="files")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _lan_address() -> str | None:
+    """Best guess at this machine's address on the local network."""
+    import socket
+
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Picks the interface that would route outward. Sends nothing.
+            probe.connect(("8.8.8.8", 80))
+            return probe.getsockname()[0]
+        finally:
+            probe.close()
+    except OSError:
+        return None
+
+
+def _banner() -> None:
+    """Print where the UI can actually be reached, and where it cannot."""
+    loopback = settings.host in {"127.0.0.1", "localhost", "::1"}
+    lines = [f"  Dowser {__version__}", f"    Local:    http://127.0.0.1:{settings.port}"]
+
+    if not loopback:
+        if lan := _lan_address():
+            lines.append(f"    Network:  http://{lan}:{settings.port}")
+        lines.append(f"    Bound to {settings.host} — reachable from your network.")
+    else:
+        lines += [
+            "",
+            f"    Bound to {settings.host}: only this machine can reach it.",
+            "    To open it to your network, restart with HOST=0.0.0.0",
+        ]
+
+    print("\n".join(["", *lines, ""]), flush=True)
+
+
 def main() -> None:
     import uvicorn
+
+    if not settings.ffmpeg_available:
+        print(
+            "\n  WARNING: ffmpeg was not found on PATH. Detection will work, but "
+            "HLS/DASH downloads will fail.\n",
+            flush=True,
+        )
+    _banner()
 
     uvicorn.run(
         "app.main:app",
