@@ -156,7 +156,9 @@ class QueueManager:
         subfolder: str | None = None,
     ) -> list[Job]:
         """Queue every selected stream from one page, numbered if there are several."""
-        stem = naming.sanitize(title, strip_site_suffix=True)
+        stem = naming.sanitize(
+            naming.apply_filters(title, runtime.title_filters), strip_site_suffix=True
+        )
         folder = naming.safe_subfolder(subfolder)
         created: list[Job] = []
 

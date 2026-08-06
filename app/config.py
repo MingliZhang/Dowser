@@ -55,6 +55,9 @@ class Settings:
     #: When retries run out, send the page back to the detection stage.
     refetch_on_failure: bool = field(default_factory=lambda: _env_bool("REFETCH_ON_FAILURE", True))
 
+    #: Patterns stripped out of every filename, one per line.
+    title_filters: str = field(default_factory=lambda: os.getenv("TITLE_FILTERS", ""))
+
     #: Probe finished files for truncation and corruption before accepting them.
     verify_downloads: bool = field(default_factory=lambda: _env_bool("VERIFY_DOWNLOADS", True))
     #: Percent shorter than advertised a video may be before it counts as short.

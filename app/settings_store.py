@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from . import naming
 from .config import settings
 
-Kind = Literal["int", "bool", "path"]
+Kind = Literal["int", "bool", "path", "lines"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,19 @@ def _schema() -> tuple[Knob, ...]:
             help=(
                 "Where finished videos are written. Created if missing. "
                 "Downloads already running finish into the old folder."
+            ),
+        ),
+        Knob(
+            key="title_filters",
+            label="Strip from titles",
+            kind="lines",
+            default=settings.title_filters,
+            group="Naming",
+            help=(
+                "One per line, removed from every filename. Plain text matches "
+                "literally and ignores case. Wrap in slashes for a regular "
+                "expression, adding i for case-insensitive: /\\s*\\[\\d+p\\]/i "
+                "strips [1080p]. Lines starting with # are notes."
             ),
         ),
         Knob(
@@ -249,6 +264,18 @@ class SettingsStore:
             if isinstance(raw, str):
                 return raw.strip().lower() in {"1", "true", "yes", "on"}
             return bool(raw)
+
+        if knob.kind == "lines":
+            text = str(raw or "").strip()
+            for line in text.splitlines():
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                try:
+                    naming.compile_one(entry)
+                except re.error as exc:
+                    raise ValueError(f"{knob.label}: {entry!r} is not a valid pattern ({exc})") from exc
+            return text
 
         if knob.kind == "path":
             text = str(raw or "").strip()

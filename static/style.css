@@ -293,6 +293,18 @@ details[open] .summary-row::before { transform: rotate(90deg); }
   padding: 8px 10px;
 }
 .setting-control .path-input:focus { outline: none; border-color: var(--accent); }
+.setting-control .lines-input {
+  width: 340px;
+  max-width: 44vw;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.setting-control .lines-input:focus { outline: none; border-color: var(--accent); }
 .setting-unit { color: var(--muted); font-size: 12.5px; min-width: 52px; }
 .setting.deferred .setting-label::after {
   content: " · next run";
@@ -388,9 +400,10 @@ details[open] .summary-row::before { transform: rotate(90deg); }
   .pill { white-space: nowrap; flex: none; max-width: 62vw; overflow: hidden; text-overflow: ellipsis; }
 
   /* Inputs: full width, and 16px so focusing does not zoom the viewport. */
-  input[type="text"], textarea, .setting-control input, .path-input {
+  input[type="text"], textarea, .setting-control input, .path-input, .lines-input {
     font-size: 16px;
     width: 100%;
+    max-width: 100%;
   }
   textarea { min-height: 96px; }
 

@@ -27,10 +27,41 @@ const clock = (seconds) => {
            : `${m}:${String(s).padStart(2, '0')}`;
 };
 
-/** Mirrors app/naming.py so the preview matches the file that gets written. */
+/**
+ * Mirrors app/naming.py so the preview matches the file that gets written.
+ * Slash-wrapped lines are regular expressions; everything else is literal.
+ */
+function compileFilters(raw) {
+  const patterns = [];
+  for (const line of String(raw || '').split('\n')) {
+    const entry = line.trim();
+    if (!entry || entry.startsWith('#')) continue;
+    try {
+      if (entry.length > 2 && entry.startsWith('/') && entry.lastIndexOf('/') > 0) {
+        const end = entry.lastIndexOf('/');
+        const flags = entry.slice(end + 1).toLowerCase().includes('i') ? 'gi' : 'g';
+        patterns.push(new RegExp(entry.slice(1, end), flags));
+      } else {
+        patterns.push(new RegExp(entry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
+      }
+    } catch (_) {
+      // The server rejects bad patterns on save; ignore them in the preview.
+    }
+  }
+  return patterns;
+}
+
+const applyFilters = (title, raw) =>
+  compileFilters(raw).reduce((text, pattern) => text.replace(pattern, ' '), title || '');
+
 const sanitize = (title) =>
   (title || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s.]+|[\s.]+$/g, '')
     .slice(0, 150) || 'video';
+
+/** The filename a title will actually produce, filters included. */
+const finalStem = (title) =>
+  sanitize(applyFilters(title, pendingSettings.get('title_filters')
+    ?? serverSettings.values?.title_filters));
 
 let toastTimer;
 function toast(message, bad = false) {
@@ -141,6 +172,9 @@ function renderSettings(schema, values) {
             <span class="setting-control">
               ${knob.kind === 'bool'
                 ? `<input type="checkbox" data-key="${esc(knob.key)}" />`
+                : knob.kind === 'lines'
+                ? `<textarea class="lines-input" data-key="${esc(knob.key)}" rows="4"
+                     spellcheck="false" placeholder="- YouTube&#10;[1080p]&#10;/\\s*\\(\\d{4}\\)/"></textarea>`
                 : knob.kind === 'path'
                 ? `<input type="text" class="path-input" data-key="${esc(knob.key)}"
                      spellcheck="false" placeholder="/path/to/folder" />`
@@ -494,7 +528,7 @@ function updatePreview(card, detection, state) {
   const count = state.selected.size;
   if (!count) { preview.textContent = ''; return; }
 
-  const stem = sanitize(state.title || detection.title || '');
+  const stem = finalStem(state.title || detection.title || '');
   const chosen = (detection.streams || []).filter((s) => state.selected.has(s.id));
   const names = chosen.map((stream, index) => {
     const base = count > 1 ? `${stem} ${index + 1}` : stem;

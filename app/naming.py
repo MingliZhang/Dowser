@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 
 #: Illegal on Windows, awkward everywhere.
@@ -19,6 +20,48 @@ _RESERVED = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 MAX_STEM = 150
+
+
+def compile_one(line: str) -> re.Pattern[str]:
+    """Turn one user-written line into a pattern.
+
+    Wrapped in slashes means a regular expression — ``/\\s*\\[\\d+p\\]/i``.
+    Anything else is matched literally and case-insensitively, so a title
+    containing ``[HD]`` can be cleaned up without anyone learning that square
+    brackets mean something to a regex engine.
+    """
+    if len(line) > 2 and line.startswith("/") and line.rfind("/") > 0:
+        end = line.rfind("/")
+        body, flags = line[1:end], line[end + 1:]
+        return re.compile(body, re.IGNORECASE if "i" in flags.lower() else 0)
+    return re.compile(re.escape(line), re.IGNORECASE)
+
+
+@lru_cache(maxsize=8)
+def compile_filters(raw: str) -> tuple[re.Pattern[str], ...]:
+    """Compile the whole filter list. Invalid lines are skipped.
+
+    Bad patterns are rejected when the setting is saved, so anything reaching
+    here is either valid or was written straight into settings.json by hand.
+    """
+    patterns = []
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        try:
+            patterns.append(compile_one(text))
+        except re.error:
+            continue
+    return tuple(patterns)
+
+
+def apply_filters(title: str, raw_filters: str) -> str:
+    """Strip every configured pattern out of a title."""
+    result = title or ""
+    for pattern in compile_filters(raw_filters):
+        result = pattern.sub(" ", result)
+    return result
 
 
 def sanitize(title: str, *, strip_site_suffix: bool = False) -> str:

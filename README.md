@@ -307,6 +307,23 @@ filesystem:
 | Illegal characters (`/ \ : * ? " < > \|`) | replaced with spaces |
 | Trailing site name (` - YouTube`) | stripped |
 
+**Strip from titles** in Settings removes whatever else you do not want, one
+pattern per line:
+
+```
+[1080p]                        plain text — matched literally, ignoring case
+- Watch Online                 punctuation needs no escaping
+/\s*\|\s*Example Site\s*$/i    wrapped in slashes — a regular expression
+/\s*\(\d{4}\)/                 trailing i makes it case-insensitive
+# anything after a hash is a note
+```
+
+So `Lecture 3 [1080p] | Example Site` is saved as `Lecture 3.mp4`. Plain text is
+matched literally on purpose: a title containing `[HD]` can be cleaned up
+without anyone needing to know that brackets mean something to a regex engine.
+Invalid patterns are rejected when you save, naming the offending line, and the
+filename preview under each card updates as you type.
+
 Set **Subfolder** to group a batch into its own directory under the download
 folder.
 
