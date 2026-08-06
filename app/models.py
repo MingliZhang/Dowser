@@ -58,6 +58,10 @@ class Stream(BaseModel):
     page_url: str = ""
     #: True for the option we pre-select in the UI.
     recommended: bool = False
+    #: Streams sharing a group are the same video at different qualities, so
+    #: only one of them is worth downloading. Distinct videos on a page get
+    #: distinct groups.
+    group: str = ""
 
     @property
     def sort_key(self) -> tuple:

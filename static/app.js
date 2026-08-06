@@ -51,8 +51,30 @@ function compileFilters(raw) {
   return patterns;
 }
 
-const applyFilters = (title, raw) =>
-  compileFilters(raw).reduce((text, pattern) => text.replace(pattern, ' '), title || '');
+/** Mirrors apply_filters in app/naming.py: longest match wins, order-independent. */
+function applyFilters(title, raw) {
+  let text = title || '';
+  const patterns = compileFilters(raw);
+  if (!patterns.length) return text;
+
+  for (let pass = 0; pass < 200; pass += 1) {
+    let best = null;
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        if (match[0].length === 0) { pattern.lastIndex += 1; continue; }
+        if (!best || match[0].length > best.length
+            || (match[0].length === best.length && match.index < best.start)) {
+          best = { start: match.index, length: match[0].length };
+        }
+      }
+    }
+    if (!best) break;
+    text = `${text.slice(0, best.start)} ${text.slice(best.start + best.length)}`;
+  }
+  return text;
+}
 
 const sanitize = (title) =>
   (title || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s.]+|[\s.]+$/g, '')
@@ -101,7 +123,13 @@ let serverNow = Date.now() / 1000;
 function localFor(url, detection) {
   let entry = local.get(url);
   if (!entry) {
-    entry = { title: detection.title || '', selected: new Set(), touchedTitle: false };
+    entry = {
+      title: detection.title || '',
+      selected: new Set(),
+      touchedTitle: false,
+      // Once someone has chosen, an empty selection is a choice, not a blank slate.
+      touchedSelection: false,
+    };
     local.set(url, entry);
   }
   if (!entry.touchedTitle && detection.title && entry.title !== detection.title) {
@@ -362,7 +390,13 @@ function buildCard(detection) {
         ? `<span class="tag folder" title="Saves into this subfolder">📁 ${esc(detection.subfolder)}</span>` : ''}
       <span class="badge ${detection.status}">${badges[detection.status] || detection.status}</span>
     </div>
-    ${streams.length ? `<div class="streams">${streams.map(streamRow).join('')}</div>` : ''}
+    ${streams.length ? `
+      <div class="stream-tools">
+        <button class="ghost tiny select-all">Select all</button>
+        <button class="ghost tiny select-best">Best of each video</button>
+        <button class="ghost tiny select-none">Clear</button>
+      </div>
+      <div class="streams">${streams.map(streamRow).join('')}</div>` : ''}
     ${detection.notes?.length
       ? `<div class="notes">${detection.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>` : ''}
     <div class="card-foot">
@@ -372,9 +406,19 @@ function buildCard(detection) {
       <span class="preview"></span>
     </div>`;
 
-  // Pre-select the recommended stream the first time we see this page.
-  if (!state.selected.size) {
-    streams.filter((s) => s.recommended).forEach((s) => state.selected.add(s.id));
+  // Pre-select every distinct video the first time we see this page. Streams
+  // are ordered best-first, so the first of each group is that video's best
+  // quality — picking one per group selects all the videos without also
+  // queueing the same one at 1080p, 720p and 480p.
+  if (!state.selected.size && !state.touchedSelection) {
+    const seenGroups = new Set();
+    streams.forEach((stream) => {
+      if (stream.kind === 'subtitle') return;
+      const group = stream.group || stream.url;
+      if (seenGroups.has(group)) return;
+      seenGroups.add(group);
+      state.selected.add(stream.id);
+    });
   }
   card.querySelectorAll('.stream input').forEach((box) => {
     box.checked = state.selected.has(box.value);
@@ -416,9 +460,36 @@ function wireCard(card, detection, state) {
   card.querySelectorAll('.stream input').forEach((box) => {
     box.addEventListener('change', () => {
       if (box.checked) state.selected.add(box.value); else state.selected.delete(box.value);
+      state.touchedSelection = true;
       updatePreview(card, detection, state);
       refreshBatchButton();
     });
+  });
+
+  const setSelection = (ids) => {
+    state.selected = new Set(ids);
+    state.touchedSelection = true;
+    card.querySelectorAll('.stream input').forEach((box) => {
+      box.checked = state.selected.has(box.value);
+    });
+    updatePreview(card, detection, state);
+    refreshBatchButton();
+  };
+
+  card.querySelector('.select-all')?.addEventListener('click', () =>
+    setSelection((detection.streams || []).map((s) => s.id)));
+
+  card.querySelector('.select-none')?.addEventListener('click', () => setSelection([]));
+
+  card.querySelector('.select-best')?.addEventListener('click', () => {
+    const seenGroups = new Set();
+    setSelection((detection.streams || []).filter((stream) => {
+      if (stream.kind === 'subtitle') return false;
+      const group = stream.group || stream.url;
+      if (seenGroups.has(group)) return false;
+      seenGroups.add(group);
+      return true;
+    }).map((s) => s.id));
   });
 
   card.querySelector('.download')?.addEventListener('click', async (event) => {

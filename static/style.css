@@ -171,6 +171,7 @@ main {
 .badge.none { background: #2b2413; color: var(--warn); }
 .badge.error { background: #261414; color: var(--error); }
 
+.stream-tools { display: flex; gap: 6px; margin: 12px 0 -4px; flex-wrap: wrap; }
 .streams { margin: 12px 0 0; display: flex; flex-direction: column; gap: 6px; }
 .stream {
   display: flex;

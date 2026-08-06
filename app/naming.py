@@ -56,12 +56,44 @@ def compile_filters(raw: str) -> tuple[re.Pattern[str], ...]:
     return tuple(patterns)
 
 
+#: Stops a pathological pattern set from looping forever on one title.
+_MAX_FILTER_PASSES = 200
+
+
 def apply_filters(title: str, raw_filters: str) -> str:
-    """Strip every configured pattern out of a title."""
-    result = title or ""
-    for pattern in compile_filters(raw_filters):
-        result = pattern.sub(" ", result)
-    return result
+    """Strip every configured pattern out of a title, longest match first.
+
+    Patterns routinely overlap — "！ | Site", "？ | Site" and " | Site" all end
+    the same way. Applying them in written order would let the short one strip
+    its part first and strand the punctuation the longer one would have taken,
+    making the result depend on what order the lines happen to be in. So each
+    pass removes the longest match found anywhere by any pattern, and repeats
+    until nothing matches.
+    """
+    text = title or ""
+    patterns = compile_filters(raw_filters)
+    if not patterns:
+        return text
+
+    for _ in range(_MAX_FILTER_PASSES):
+        best: re.Match[str] | None = None
+        for pattern in patterns:
+            for match in pattern.finditer(text):
+                if match.end() == match.start():
+                    continue  # zero-width match; removing it would never end
+                if (
+                    best is None
+                    or (match.end() - match.start()) > (best.end() - best.start())
+                    or (
+                        (match.end() - match.start()) == (best.end() - best.start())
+                        and match.start() < best.start()
+                    )
+                ):
+                    best = match
+        if best is None:
+            break
+        text = f"{text[:best.start()]} {text[best.end():]}"
+    return text
 
 
 def sanitize(title: str, *, strip_site_suffix: bool = False) -> str:

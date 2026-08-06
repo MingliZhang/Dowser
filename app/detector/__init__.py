@@ -35,6 +35,7 @@ async def detect(url: str, quick: bool = False, allow_fallback: bool = True) -> 
         for stream in streams:
             stream.source = "direct"
             stream.page_url = url
+            stream.group = stream.group or url
         return DetectResult(
             url=url,
             title=_title_from_url(url),
@@ -82,8 +83,12 @@ async def detect(url: str, quick: bool = False, allow_fallback: bool = True) -> 
                 for capture, capture_notes in zip(ranked, per_capture)
             )
         )
-        for capture_notes, capture_streams in zip(per_capture, expanded):
+        for capture, capture_notes, capture_streams in zip(ranked, per_capture, expanded):
             notes.extend(capture_notes)
+            # Everything one capture yields is one video: a master playlist's
+            # 1080p/720p/480p are alternatives, not three things to download.
+            for stream in capture_streams:
+                stream.group = stream.group or capture.url
             streams.extend(capture_streams)
 
         streams = _drop_covered_variants(streams)
@@ -99,6 +104,9 @@ async def detect(url: str, quick: bool = False, allow_fallback: bool = True) -> 
         yt_title, yt_streams, error = await ytdlp_probe.probe(url)
         if yt_streams:
             notes.append("No streams captured — fell back to the yt-dlp extractor.")
+            # Extractor formats are all the same video in different qualities.
+            for stream in yt_streams:
+                stream.group = url
             streams.extend(yt_streams)
             if not title and yt_title:
                 title, title_source = yt_title, "extractor"
