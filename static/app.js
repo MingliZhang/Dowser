@@ -211,6 +211,12 @@ function renderSettings(schema, values) {
                    <span class="setting-unit">${esc(knob.unit || '')}</span>`}
             </span>
             <span class="setting-help">${esc(knob.help || '')}</span>
+            ${knob.kind === 'lines' ? `
+              <div class="filter-test">
+                <input type="text" id="filter-test-input" spellcheck="false"
+                       placeholder="Paste a real title here to see what these patterns do to it" />
+                <div class="filter-test-out" id="filter-test-out"></div>
+              </div>` : ''}
           </div>`).join('')}
       </div>`).join('');
 
@@ -221,6 +227,7 @@ function renderSettings(schema, values) {
         if (keyEvent.key === 'Enter') $('#save-settings').click();
       });
     });
+    wireFilterTester();
     settingsBuilt = true;
   }
 
@@ -258,6 +265,58 @@ function refreshSettingsButtons() {
   $('#save-settings').textContent = dirty
     ? `Save ${pendingSettings.size} change${pendingSettings.size > 1 ? 's' : ''}`
     : 'Save settings';
+}
+
+/**
+ * Runs a title through the filters server-side and reports which lines matched.
+ * Deliberately not evaluated in the browser: the point is to show what the
+ * server will really do, so a client/server difference cannot hide the answer.
+ */
+let filterTestTimer;
+function wireFilterTester() {
+  const input = $('#filter-test-input');
+  const out = $('#filter-test-out');
+  if (!input || !out) return;
+
+  const run = async () => {
+    const title = input.value;
+    if (!title.trim()) { out.innerHTML = ''; return; }
+    const filters = pendingSettings.get('title_filters')
+      ?? serverSettings.values?.title_filters ?? '';
+    try {
+      const result = await api('/api/settings/test-title', {
+        method: 'POST',
+        body: JSON.stringify({ title, filters }),
+      });
+      const rows = [`<div class="ft-result">→ <b>${esc(result.filename)}</b></div>`];
+      if (result.matched.length) {
+        rows.push(`<div class="ft-ok">matched: ${result.matched.map(esc).join(' · ')}</div>`);
+      }
+      if (result.unmatched.length) {
+        rows.push(`<div class="ft-bad">did not match: ${result.unmatched.map(esc).join(' · ')}</div>`);
+      }
+      if (result.invalid.length) {
+        rows.push(`<div class="ft-bad">invalid: ${result.invalid.map(esc).join(' · ')}</div>`);
+      }
+      if (!result.matched.length && result.codepoints) {
+        rows.push(`<div class="ft-hint">punctuation in this title: ${esc(result.codepoints)}</div>`);
+      }
+      out.innerHTML = rows.join('');
+    } catch (error) {
+      out.innerHTML = `<div class="ft-bad">${esc(error.message)}</div>`;
+    }
+  };
+
+  input.addEventListener('input', () => {
+    clearTimeout(filterTestTimer);
+    filterTestTimer = setTimeout(run, 300);
+  });
+  // Re-run when the patterns change, not just the title.
+  $('#settings-form').querySelector('textarea[data-key="title_filters"]')
+    ?.addEventListener('input', () => {
+      clearTimeout(filterTestTimer);
+      filterTestTimer = setTimeout(run, 400);
+    });
 }
 
 async function saveSettings() {

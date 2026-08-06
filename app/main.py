@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__
+from . import __version__, naming
 from .config import settings
 from .jobs import queue
 from .models import DownloadRequest
@@ -105,6 +106,45 @@ async def patch_settings(payload: dict) -> dict:
     if changed:
         queue.apply_settings()
     return {"changed": changed, **runtime.public()}
+
+
+class TitleTest(BaseModel):
+    title: str
+    #: Unsaved filter text from the settings box; falls back to what is stored.
+    filters: str | None = None
+
+
+@app.post("/api/settings/test-title")
+async def test_title(payload: TitleTest) -> dict:
+    """Run a title through the filters and report which lines actually matched.
+
+    "It does not work" is nearly always one pattern silently failing to match —
+    a fullwidth ｜ where an ASCII | was typed, a non-breaking space, a different
+    dash. Showing the per-line verdict turns that into something visible.
+    """
+    raw = payload.filters if payload.filters is not None else runtime.title_filters
+    matched, unmatched, invalid = [], [], []
+
+    for line in (raw or "").splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        try:
+            pattern = naming.compile_one(entry)
+        except re.error as exc:
+            invalid.append(f"{entry} ({exc})")
+            continue
+        (matched if pattern.search(payload.title) else unmatched).append(entry)
+
+    filtered = naming.apply_filters(payload.title, raw or "")
+    return {
+        "filename": naming.sanitize(filtered, strip_site_suffix=True),
+        "matched": matched,
+        "unmatched": unmatched,
+        "invalid": invalid,
+        # Codepoints make an invisible character mismatch obvious.
+        "codepoints": " ".join(f"{ch}=U+{ord(ch):04X}" for ch in payload.title if not ch.isalnum())[:400],
+    }
 
 
 @app.post("/api/settings/reset")
